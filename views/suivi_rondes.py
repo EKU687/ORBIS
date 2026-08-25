@@ -2,6 +2,7 @@ import datetime
 from pathlib import Path
 import sys
 import uuid
+import zoneinfo
 import streamlit as st
 
 # Détection et chargement de la gestion des jours fériés NC
@@ -26,6 +27,14 @@ try:
     HAS_EMAIL = True
 except Exception:
     HAS_EMAIL = False
+
+# Fuseau horaire Nouvelle-Calédonie (UTC+11)
+TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
+
+
+def get_now_nc() -> datetime.datetime:
+    """Retourne la date et l'heure actuelles en Nouvelle-Calédonie."""
+    return datetime.datetime.now(TZ_NC)
 
 
 def est_jour_non_ouvre(date_cible: datetime.date) -> tuple[bool, str]:
@@ -168,7 +177,7 @@ def get_or_create_vacation_id(site_id: str, agent_nom: str) -> str:
         "site_id": site_id,
         "agent_nom": agent_nom,
         "statut": "OUVERTE",
-        "created_at": datetime.datetime.now().isoformat(),
+        "created_at": get_now_nc().isoformat(),
     }
     try:
         supabase.table("vacations").insert(payload_vacation).execute()
@@ -214,7 +223,11 @@ def show():
 
     vac_id = get_or_create_vacation_id(site_actuel, agent_connecte)
 
-    today_dt = datetime.date.today()
+    # Récupération de l'horodatage précis en Nouvelle-Calédonie
+    now_nc = get_now_nc()
+    today_dt = now_nc.date()
+    heure_courante = now_nc.hour
+
     nom_jour_fr = [
         "Lundi",
         "Mardi",
@@ -244,6 +257,14 @@ def show():
             "ℹ️ **Régime Semaine Actif :** Rondes de Nuit + Ouverture Site"
             " (05h00) & Fermeture Globale (20h00)."
         )
+
+        # Affichage d'un bandeau d'information durant la période d'ouverture en semaine
+        if 8 <= heure_courante < 16:
+            st.warning(
+                "☀️ **Période Ouvrée (08h00 - 16h00) : Hors Couverture Rondes Systématiques.**\n\n"
+                "Le site est actuellement ouvert sous la responsabilité des agents et services hôtes. "
+                "Les rondes programmées reprendront à 20h00 (Fermeture globale)."
+            )
 
     # 1. Chargement des rondes effectuées aujourd'hui
     rondes_validees = {}
@@ -324,15 +345,15 @@ def show():
                             type="primary",
                             use_container_width=True,
                         ):
-                            now_dt = datetime.datetime.now()
-                            ref_time = now_dt.strftime("%Y%m%d-%H%M%S")
+                            now_nc_local = get_now_nc()
+                            ref_time = now_nc_local.strftime("%Y%m%d-%H%M%S")
 
                             payload_ronde = {
                                 "reference": ref_cle,
                                 "vacation_id": vac_id,
                                 "site_id": site_actuel,
                                 "agent_nom": agent_connecte,
-                                "horodatage": now_dt.isoformat(),
+                                "horodatage": now_nc_local.isoformat(),
                                 "type_evenement": "RONDE",
                                 "description": (
                                     f"Ronde {type_ronde} ({h_target}) :"
@@ -358,7 +379,7 @@ def show():
                                         "vacation_id": vac_id,
                                         "site_id": site_actuel,
                                         "agent_nom": agent_connecte,
-                                        "horodatage": now_dt.isoformat(),
+                                        "horodatage": now_nc_local.isoformat(),
                                         "type_evenement": "ANOMALIE",
                                         "description": (
                                             f"⚠️ ANOMALIE DÉTECTÉE lors de la"
@@ -383,7 +404,7 @@ def show():
                                                 site=site_actuel,
                                                 h_cible=h_target,
                                                 type_ronde=type_ronde,
-                                                heure_constat=now_dt.strftime(
+                                                heure_constat=now_nc_local.strftime(
                                                     "%H:%M"
                                                 ),
                                                 observation=observation,
@@ -395,7 +416,7 @@ def show():
                                             )
                                         except Exception as mail_err:
                                             st.warning(
-                                                "Note : Email non transmis"
+                                                "Note : Email non transmitted"
                                                 f" ({mail_err})"
                                             )
 
