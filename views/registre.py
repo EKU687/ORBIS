@@ -17,6 +17,20 @@ from utils.db_client import supabase
 TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
 
 
+@st.cache_data(ttl=600)
+def fetch_sites_list() -> list[str]:
+    """Récupère la liste dynamique des codes de sites depuis la table 'Sites' de Supabase."""
+    try:
+        res = supabase.table("Sites").select("code_site").order("code_site").execute()
+        if res.data:
+            sites_db = [item["code_site"] for item in res.data if item.get("code_site")]
+            return ["Tous les sites"] + sites_db
+    except Exception as e:
+        st.warning(f"⚠️ Impossible de charger les sites depuis la BDD ({e}). Valeurs par défaut utilisées.")
+    
+    return ["Tous les sites", "DINUM", "DOUMER", "SITE OUEMO"]
+
+
 def show(user_profile: dict = None):
     st.title("📖 Registre Général des Mains Courantes")
 
@@ -47,12 +61,15 @@ def show(user_profile: dict = None):
     # Rôles ayant une vue globale / multi-sites
     roles_vue_globale = ["charge_surete", "admin", "super_admin"]
 
+    # Chargement dynamique des codes de sites depuis la BDD
+    liste_sites_disponibles = fetch_sites_list()
+
     with col_perm:
         if role_clean in roles_vue_globale:
             st.success("👤 **Supervision / Administration** — Vue globale multi-sites.")
             selected_site = st.selectbox(
                 "📍 Périmètre d'observation :",
-                ["Tous les sites", "DINUM", "DOUMER", "SITE OUEMO"],
+                liste_sites_disponibles,
             )
         else:
             st.info(
@@ -117,75 +134,79 @@ def show(user_profile: dict = None):
             if search_query.strip():
                 q = search_query.lower()
                 df = df[
-                    df["description"].str.lower().str.contains(q, na=False)
-                    | df["reference"].str.lower().str.contains(q, na=False)
-                    | df["agent_nom"].str.lower().str.contains(q, na=False)
-                    | df["type_evenement"].str.lower().str.contains(q, na=False)
+                    df["description"].astype(str).str.lower().str.contains(q, na=False)
+                    | df["reference"].astype(str).str.lower().str.contains(q, na=False)
+                    | df["agent_nom"].astype(str).str.lower().str.contains(q, na=False)
+                    | df["type_evenement"].astype(str).str.lower().str.contains(q, na=False)
                 ]
 
-            # Mise en forme du tableau de résultat
-            st.subheader(
-                f"📊 Résultats de la recherche ({len(df)} événement(s))"
-            )
+            if not df.empty:
+                # Mise en forme du tableau de résultat
+                st.subheader(
+                    f"📊 Résultats de la recherche ({len(df)} événement(s))"
+                )
 
-            # Sélection et renommage des colonnes pour l'affichage
-            df_display = df[
-                [
-                    "horodatage",
-                    "site_id",
-                    "reference",
-                    "agent_nom",
-                    "type_evenement",
-                    "description",
-                    "actions_menees",
-                    "notified_authority",
+                # Sélection et renommage des colonnes pour l'affichage
+                df_display = df[
+                    [
+                        "horodatage",
+                        "site_id",
+                        "reference",
+                        "agent_nom",
+                        "type_evenement",
+                        "description",
+                        "actions_menees",
+                        "notified_authority",
+                    ]
+                ].copy()
+
+                df_display.columns = [
+                    "Horodatage",
+                    "Site",
+                    "Référence",
+                    "Agent",
+                    "Type",
+                    "Description",
+                    "Actions",
+                    "Alerte Émise",
                 ]
-            ].copy()
 
-            df_display.columns = [
-                "Horodatage",
-                "Site",
-                "Référence",
-                "Agent",
-                "Type",
-                "Description",
-                "Actions",
-                "Alerte Émise",
-            ]
+                # Conversion flexible et tolérante des dates ISO vers l'heure NC
+                df_display["Horodatage"] = (
+                    pd.to_datetime(df_display["Horodatage"], errors="coerce")
+                    .dt.tz_convert("Pacific/Noumea")
+                    .dt.strftime("%d/%m/%Y %H:%M:%S")
+                )
 
-            # Conversion flexible et tolérante des dates ISO vers l'heure NC
-            df_display["Horodatage"] = (
-                pd.to_datetime(df_display["Horodatage"], errors="coerce")
-                .dt.tz_convert("Pacific/Noumea")
-                .dt.strftime("%d/%m/%Y %H:%M:%S")
-            )
+                st.dataframe(df_display, use_container_width=True)
 
-            st.dataframe(df_display, use_container_width=True)
+                # --- 6. BOUTON D'EXPORTATION PDF ---
+                st.markdown("---")
 
-            # --- 6. BOUTON D'EXPORTATION PDF ---
-            st.markdown("---")
+                # Formater les dates pour l'affichage
+                d_start_str = date_debut.strftime("%d/%m/%Y")
+                d_end_str = date_fin.strftime("%d/%m/%Y")
 
-            # Formater les dates pour l'affichage
-            d_start_str = date_debut.strftime("%d/%m/%Y")
-            d_end_str = date_fin.strftime("%d/%m/%Y")
+                # Génération du fichier PDF binaire à partir des données filtrées
+                events_filtered = df.to_dict(orient="records")
+                pdf_bytes = generate_registre_pdf(
+                    events=events_filtered,
+                    site_id=selected_site,
+                    date_debut=d_start_str,
+                    date_fin=d_end_str,
+                )
 
-            # Génération du fichier PDF binaire
-            pdf_bytes = generate_registre_pdf(
-                events=data,
-                site_id=selected_site,
-                date_debut=d_start_str,
-                date_fin=d_end_str,
-            )
-
-            st.download_button(
-                label="📄 Exporter le registre au format PDF",
-                data=pdf_bytes,
-                file_name=(
-                    f"registre_mc_{selected_site}_{date_debut}_au_{date_fin}.pdf"
-                ),
-                mime="application/pdf",
-                type="primary",
-            )
+                st.download_button(
+                    label="📄 Exporter le registre au format PDF",
+                    data=pdf_bytes,
+                    file_name=(
+                        f"registre_mc_{selected_site}_{date_debut}_au_{date_fin}.pdf"
+                    ),
+                    mime="application/pdf",
+                    type="primary",
+                )
+            else:
+                st.info("ℹ️ Aucun événement ne correspond à votre recherche textuelle.")
         else:
             st.info("ℹ️ Aucun événement trouvé pour la période sélectionnée.")
 
