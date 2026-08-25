@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import datetime
+import zoneinfo
 import streamlit as st
 import pandas as pd
 
@@ -12,10 +13,18 @@ if str(ROOT_DIR) not in sys.path:
 from utils.db_client import supabase
 from utils.email_sender import send_alert_email
 
+# Fuseau horaire Nouvelle-Calédonie (UTC+11)
+TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
+
+
+def get_now_nc() -> datetime.datetime:
+    """Retourne la date et l'heure actuelles en Nouvelle-Calédonie."""
+    return datetime.datetime.now(TZ_NC)
+
 
 def generate_id(prefix: str) -> str:
-    """Génère un identifiant horodaté unique (ex: VAC-20260820-163000)."""
-    now = datetime.datetime.now()
+    """Génère un identifiant horodaté unique basé sur l'heure locale NC (ex: VAC-20260826-085500)."""
+    now = get_now_nc()
     return f"{prefix}-{now.strftime('%Y%m%d-%H%M%S')}"
 
 
@@ -75,7 +84,7 @@ def show_consignes_dialog(site_id: str, agent_connecte: str, consignes_actives: 
         active_vac = get_active_vacation(site_id, agent_connecte)
         if not active_vac:
             vac_ref = generate_id("VAC")
-            now = datetime.datetime.now().isoformat()
+            now = get_now_nc().isoformat()
 
             payload = {
                 "reference": vac_ref,
@@ -115,7 +124,7 @@ def show():
         col_start, _ = st.columns([1, 2])
         with col_start:
             if st.button("🚀 Prise de poste", type="primary", use_container_width=True):
-                now_iso = datetime.datetime.now().isoformat()
+                now_iso = get_now_nc().isoformat()
                 
                 # Récupération des CONSIGNES actives
                 try:
@@ -176,7 +185,7 @@ def show():
         vac_ref = active_vacation["reference"]
 
         # Récupération rapide du nombre d'instructions actives pour le badge
-        now_iso = datetime.datetime.now().isoformat()
+        now_iso = get_now_nc().isoformat()
         try:
             res_c = supabase.table("consignes").select("*").eq("site_id", site_actuel).eq("statut", "ACTIVE").gte("fin_at", now_iso).execute().data or []
             res_a = supabase.table("anomalies").select("*").eq("site_id", site_actuel).neq("statut", "RESOLUE").execute().data or []
@@ -200,7 +209,7 @@ def show():
 
         with col_close:
             if st.button("🔴 Fin de poste", type="secondary", use_container_width=True):
-                now = datetime.datetime.now().isoformat()
+                now = get_now_nc().isoformat()
                 try:
                     supabase.table("vacations").update(
                         {"fin_at": now, "statut": "CLOTUREE"}
@@ -236,7 +245,7 @@ def show():
                     )
                 with col_heure:
                     heure_event = st.time_input(
-                        "Heure du constat", value=datetime.datetime.now().time()
+                        "Heure du constat", value=get_now_nc().time()
                     )
 
                 description = st.text_area(
@@ -262,8 +271,9 @@ def show():
                         st.error("La description est obligatoire.")
                     else:
                         event_ref = generate_id("MC")
+                        now_nc = get_now_nc()
                         dt_event = datetime.datetime.combine(
-                            datetime.date.today(), heure_event
+                            now_nc.date(), heure_event, tzinfo=TZ_NC
                         ).isoformat()
 
                         event_payload = {
@@ -350,7 +360,8 @@ def show():
                         "Actions",
                     ]
 
-                    df["Heure"] = pd.to_datetime(df["Heure"]).dt.strftime(
+                    # Conversion et formatage en heure locale
+                    df["Heure"] = pd.to_datetime(df["Heure"]).dt.tz_convert("Pacific/Noumea").dt.strftime(
                         "%H:%M:%S"
                     )
 
