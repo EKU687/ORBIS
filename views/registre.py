@@ -20,6 +20,12 @@ def show(user_profile: dict):
     user_site = user_profile.get("site_id", "DINUM")
 
 # --- 1. CONTRÔLE D'ACCÈS STRICT ---
+
+#RÉCUPÉRATION DU RÔLE DEPUIS SESSION STATE ---
+user_profile = st.session_state.get("user_profile", {})
+role = user_profile.get("role") or st.session_state.get("role", "")
+user_site = st.session_state.get("site_actif", "DINUM")
+
 # Normalisation du rôle en minuscules et sans espaces superflus
 role_clean = str(role).strip().lower() if role else ""
 
