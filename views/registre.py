@@ -21,9 +21,9 @@ TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
 def fetch_sites_list() -> list[str]:
     """Récupère la liste dynamique des codes de sites depuis la table 'Sites' de Supabase."""
     try:
-        res = supabase.table("Sites").select("code_site").order("code_site").execute()
+        res = supabase.table("Sites").select("nom_site").order("nom_site").execute()
         if res.data:
-            sites_db = [item["code_site"] for item in res.data if item.get("code_site")]
+            sites_db = [item["nom_site"] for item in res.data if item.get("nom_site")]
             return ["Tous les sites"] + sites_db
     except Exception as e:
         st.warning(f"⚠️ Impossible de charger les sites depuis la BDD ({e}). Valeurs par défaut utilisées.")
