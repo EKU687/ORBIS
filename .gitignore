@@ -1,0 +1,48 @@
+# ==========================================
+# 1. SÉCURITÉ & SECRETS (CRITIQUE)
+# ==========================================
+.streamlit/secrets.toml
+.env
+.env.*
+*.pem
+*.key
+
+# ==========================================
+# 2. PYTHON & CACHE
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ==========================================
+# 3. ENVIRONNEMENTS VIRTUELS
+# ==========================================
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ==========================================
+# 4. CONFIGURATIONS IDE & ÉDITEURS
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ==========================================
+# 5. FICHIERS PARASITES SYSTÈME (OS)
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
