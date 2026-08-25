@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import urllib.request
 import uuid
+import zoneinfo
 import pandas as pd
 import streamlit as st
 
@@ -14,6 +15,9 @@ if str(ROOT_DIR) not in sys.path:
 from utils.db_client import supabase
 
 URL_ASAP_CSV = "https://docs.google.com/spreadsheets/d/1cKIlYixzeFtJSO3hVQKjkSv_GRPPqEqkzA7zUbSNyKo/gviz/tq?tqx=out:csv&sheet=RendezVous"
+
+# Definition du fuseau horaire Nouvelle-Caledonie (UTC+11)
+TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
 
 
 @st.cache_data(ttl=180)
@@ -59,13 +63,14 @@ def get_or_create_vacation_id(site_id: str, agent_nom: str) -> str:
     except Exception:
         pass
 
+    now_nc = datetime.datetime.now(TZ_NC)
     new_id = str(uuid.uuid4())
     payload_vacation = {
         "id": new_id,
         "site_id": site_id,
         "agent_nom": agent_nom,
         "statut": "OUVERTE",
-        "created_at": datetime.datetime.now().isoformat(),
+        "created_at": now_nc.isoformat(),
     }
     try:
         supabase.table("vacations").insert(payload_vacation).execute()
@@ -75,13 +80,14 @@ def get_or_create_vacation_id(site_id: str, agent_nom: str) -> str:
         return new_id
 
 
-def get_visiteurs_presents_bdd(site_id: str) -> tuple[dict, set, set, set]:
-    """Interroge Supabase pour déterminer la présence réelle et les absences/annulations."""
-    today_dt = datetime.date.today()
+def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tuple[dict, set, set, set]:
+    """Interroge Supabase pour déterminer la présence réelle et les absences/annulations à une date cible."""
     dt_start = datetime.datetime.combine(
-        today_dt, datetime.time.min
+        target_date, datetime.time.min, tzinfo=TZ_NC
     ).isoformat()
-    dt_end = datetime.datetime.combine(today_dt, datetime.time.max).isoformat()
+    dt_end = datetime.datetime.combine(
+        target_date, datetime.time.max, tzinfo=TZ_NC
+    ).isoformat()
 
     presents_dict = {}
     sortis_set = set()
@@ -156,8 +162,7 @@ def get_visiteurs_presents_bdd(site_id: str) -> tuple[dict, set, set, set]:
 def show():
     st.title("👥 Suivi Général des Visiteurs (Persistance BDD)")
     st.caption(
-        "Registre d'accueil synchronisé en temps réel avec la base de données"
-        " Supabase."
+        "Registre d'accueil synchronisé en temps réel avec la base de données Supabase."
     )
 
     site_actuel = st.session_state.get("site_actif", "DINUM")
@@ -166,21 +171,42 @@ def show():
     )
     agent_connecte = user_info["full_name"]
 
-    today_dt = datetime.date.today()
-    today_str_fr = today_dt.strftime("%d/%m/%Y")
-    today_str_iso = today_dt.strftime("%Y-%m-%d")
+    # 1. Date courante en Nouvelle-Calédonie
+    aujourdhui_nc = datetime.datetime.now(TZ_NC).date()
 
-    c_head1, c_head2 = st.columns([3, 1])
+    # 2. En-tête avec Sélecteur de date et Bouton d'actualisation
+    c_head1, c_head2, c_head3 = st.columns([2, 1.5, 1])
+    
     with c_head1:
-        st.subheader(f"📅 Planning d'accueil du {today_str_fr}")
+        selected_date = st.date_input(
+            "📅 Date de consultation :",
+            value=aujourdhui_nc,
+            format="DD/MM/YYYY",
+        )
+    
     with c_head2:
-        if st.button("🔄 Actualiser les données", use_container_width=True):
+        st.write("")  # Espaceur d'alignement
+        st.write("")
+        if selected_date == aujourdhui_nc:
+            st.caption("🟢 Temps réel (Aujourd'hui)")
+        elif selected_date > aujourdhui_nc:
+            st.caption("🔵 Planning prévisionnel")
+        else:
+            st.caption("🟠 Historique / Archives")
+
+    with c_head3:
+        st.write("")  # Espaceur d'alignement
+        st.write("")
+        if st.button("🔄 Actualiser", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 
-    # --- LECTURE EN TEMPS RÉEL DE LA BDD ---
+    selected_str_fr = selected_date.strftime("%d/%m/%Y")
+    selected_str_iso = selected_date.strftime("%Y-%m-%d")
+
+    # --- LECTURE BDD POUR LA DATE SÉLECTIONNÉE ---
     presents_bdd, sortis_bdd, absents_bdd, badges_occupes = (
-        get_visiteurs_presents_bdd(site_actuel)
+        get_visiteurs_presents_bdd(site_actuel, selected_date)
     )
 
     tous_badges = [f"V.{i:03d}" for i in range(1, 31)]
@@ -219,15 +245,15 @@ def show():
                         use_container_width=True,
                         type="secondary",
                     ):
-                        now_dt = datetime.datetime.now()
-                        ref_time = now_dt.strftime("%Y%m%d-%H%M%S")
+                        now_nc = datetime.datetime.now(TZ_NC)
+                        ref_time = now_nc.strftime("%Y%m%d-%H%M%S")
 
                         payload_sortie = {
                             "reference": f"REF-VIS-IMP-OUT-{ref_time}",
                             "vacation_id": vac_id,
                             "site_id": site_actuel,
                             "agent_nom": agent_connecte,
-                            "horodatage": now_dt.isoformat(),
+                            "horodatage": now_nc.isoformat(),
                             "type_evenement": "VISITEUR",
                             "description": (
                                 f"Sortie visiteur imprévu : {nom_key} (Badge"
@@ -253,7 +279,7 @@ def show():
         st.info("ℹ️ Aucun visiteur imprévu actuellement présent sur site.")
 
     # --- 2. VISITEURS ATTENDUS (ASAP) ---
-    st.markdown("### 👥 Visiteurs Attendus (Planning ASAP)")
+    st.markdown(f"### 👥 Visiteurs Attendus (Planning ASAP du {selected_str_fr})")
     df_raw = fetch_asap_data(URL_ASAP_CSV)
 
     if not df_raw.empty:
@@ -271,24 +297,24 @@ def show():
             df_filtered["date_str"] = (
                 df_filtered["date"].astype(str).str.strip()
             )
-            df_today = df_filtered[
-                (df_filtered["date_str"] == today_str_fr)
-                | (df_filtered["date_str"] == today_str_iso)
+            df_target_date = df_filtered[
+                (df_filtered["date_str"] == selected_str_fr)
+                | (df_filtered["date_str"] == selected_str_iso)
             ].copy()
         else:
-            df_today = df_filtered.copy()
+            df_target_date = df_filtered.copy()
 
         # 🎯 Filtrer ceux déjà sortis ET ceux déclarés non présentés / annulés
-        if not df_today.empty:
-            df_today["nom_clean"] = df_today["nom"].astype(str).str.strip().str.upper()
-            df_today = df_today[
-                (~df_today["nom_clean"].isin(sortis_bdd))
-                & (~df_today["nom_clean"].isin(absents_bdd))
+        if not df_target_date.empty:
+            df_target_date["nom_clean"] = df_target_date["nom"].astype(str).str.strip().str.upper()
+            df_target_date = df_target_date[
+                (~df_target_date["nom_clean"].isin(sortis_bdd))
+                & (~df_target_date["nom_clean"].isin(absents_bdd))
             ].copy()
 
-        if not df_today.empty:
+        if not df_target_date.empty:
             with st.container(height=450):
-                for idx, row in df_today.iterrows():
+                for idx, row in df_target_date.iterrows():
                     h_arr = (
                         row.get("Heure Arrivée")
                         or row.get("Heure Arrivee")
@@ -323,8 +349,8 @@ def show():
                         st.write(f"🏢 **Hôte :** {organisateur}")
 
                     with col_action:
-                        now_dt = datetime.datetime.now()
-                        ref_time = now_dt.strftime("%Y%m%d-%H%M%S")
+                        now_nc = datetime.datetime.now(TZ_NC)
+                        ref_time = now_nc.strftime("%Y%m%d-%H%M%S")
 
                         if est_present:
                             badge_attribue = presents_bdd[nom_visiteur]["badge"]
@@ -341,7 +367,7 @@ def show():
                                     "vacation_id": vac_id,
                                     "site_id": site_actuel,
                                     "agent_nom": agent_connecte,
-                                    "horodatage": now_dt.isoformat(),
+                                    "horodatage": now_nc.isoformat(),
                                     "type_evenement": "VISITEUR",
                                     "description": (
                                         f"Sortie visiteur attendu :"
@@ -390,7 +416,7 @@ def show():
                                         "vacation_id": vac_id,
                                         "site_id": site_actuel,
                                         "agent_nom": agent_connecte,
-                                        "horodatage": now_dt.isoformat(),
+                                        "horodatage": now_nc.isoformat(),
                                         "type_evenement": "VISITEUR",
                                         "description": (
                                             "Arrivée visiteur attendu :"
@@ -435,7 +461,7 @@ def show():
                                         "vacation_id": vac_id,
                                         "site_id": site_actuel,
                                         "agent_nom": agent_connecte,
-                                        "horodatage": now_dt.isoformat(),
+                                        "horodatage": now_nc.isoformat(),
                                         "type_evenement": "VISITEUR",
                                         "description": (
                                             "Visiteur non présenté :"
@@ -464,6 +490,5 @@ def show():
                     st.markdown("---")
         else:
             st.info(
-                "ℹ️ Aucun visiteur attendu pour aujourd'hui dans le planning"
-                " ASAP."
+                f"ℹ️ Aucun visiteur attendu le {selected_str_fr} dans le planning ASAP."
             )
