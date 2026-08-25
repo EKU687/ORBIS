@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import datetime
+import zoneinfo
 import streamlit as st
 import pandas as pd
 from utils.pdf_generator import generate_registre_pdf
@@ -12,38 +13,36 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.db_client import supabase
 
+# Fuseau horaire Nouvelle-Calédonie (UTC+11)
+TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
 
-def show(user_profile: dict):
+
+def show(user_profile: dict = None):
     st.title("📖 Registre Général des Mains Courantes")
 
-    role = user_profile.get("role", "agent")
-    user_site = user_profile.get("site_id", "DINUM")
+    # --- 1. RÉCUPÉRATION DU RÔLE ET PROFIL DEPUIS PARAMÈTRE OU SESSION ---
+    if not user_profile:
+        user_profile = st.session_state.get("user_profile", {})
 
-# --- 1. CONTRÔLE D'ACCÈS STRICT ---
+    raw_role = user_profile.get("role") or st.session_state.get("role", "agent")
+    user_site = user_profile.get("site_id") or st.session_state.get("site_actif", "DINUM")
 
-#RÉCUPÉRATION DU RÔLE DEPUIS SESSION STATE ---
-user_profile = st.session_state.get("user_profile", {})
-role = user_profile.get("role") or st.session_state.get("role", "")
-user_site = st.session_state.get("site_actif", "DINUM")
+    # Normalisation du rôle en minuscules et sans espaces superflus
+    role_clean = str(raw_role).strip().lower()
 
-# Normalisation du rôle en minuscules et sans espaces superflus
-role_clean = str(role).strip().lower() if role else ""
+    # Liste des rôles autorisés à consulter le registre
+    roles_autorises = ["habilite", "charge_surete", "admin", "super_admin"]
 
-# Liste des rôles autorisés à consulter le registre
-roles_autorises = ["habilite", "charge_surete", "admin", "super_admin"]
+    # --- 2. CONTRÔLE D'ACCÈS STRICT ---
+    if role_clean not in roles_autorises:
+        st.error(
+            "⛔ Accès refusé : Vous n'avez pas les habilitations requises pour"
+            " consulter le registre."
+        )
+        st.stop()
 
-if role_clean not in roles_autorises:
-    st.error(
-        "⛔ Accès refusé : Vous n'avez pas les habilitations requises pour"
-        " consulter le registre."
-    )
-    st.stop()
-
-    # --- 2. SÉLECTION DU PÉRIMÈTRE DE CONSULTATION ---
+    # --- 3. SÉLECTION DU PÉRIMÈTRE DE CONSULTATION ---
     col_perm, _ = st.columns([2, 1])
-    
-    # Normalisation du rôle
-    role_clean = str(role).strip().lower() if role else ""
     
     # Rôles ayant une vue globale / multi-sites
     roles_vue_globale = ["charge_surete", "admin", "super_admin"]
@@ -53,7 +52,7 @@ if role_clean not in roles_autorises:
             st.success("👤 **Supervision / Administration** — Vue globale multi-sites.")
             selected_site = st.selectbox(
                 "📍 Périmètre d'observation :",
-                ["Tous les sites", "DINUM", "DOUMER"],
+                ["Tous les sites", "DINUM", "DOUMER", "SITE OUEMO"],
             )
         else:
             st.info(
@@ -64,30 +63,37 @@ if role_clean not in roles_autorises:
 
     st.markdown("---")
 
-    # --- 3. BARRE DE FILTRES ET DE RECHERCHE ---
+    # --- 4. BARRE DE FILTRES ET DE RECHERCHE ---
+    aujourdhui_nc = datetime.datetime.now(TZ_NC).date()
+
     col_d1, col_d2, col_search = st.columns([1, 1, 2])
     with col_d1:
         date_debut = st.date_input(
             "Date de début",
-            value=datetime.date.today() - datetime.timedelta(days=7),
+            value=aujourdhui_nc - datetime.timedelta(days=7),
+            format="DD/MM/YYYY",
         )
     with col_d2:
-        date_fin = st.date_input("Date de fin", value=datetime.date.today())
+        date_fin = st.date_input(
+            "Date de fin", 
+            value=aujourdhui_nc,
+            format="DD/MM/YYYY",
+        )
     with col_search:
         search_query = st.text_input(
             "🔍 Recherche textuelle",
             placeholder="Ex: Fuite, Nom, Numéro MC...",
         )
 
-    # Convertir en horodatages ISO pour Supabase
+    # Convertir en horodatages ISO avec fuseau horaire NC pour Supabase
     dt_start = datetime.datetime.combine(
-        date_debut, datetime.time.min
+        date_debut, datetime.time.min, tzinfo=TZ_NC
     ).isoformat()
     dt_end = datetime.datetime.combine(
-        date_fin, datetime.time.max
+        date_fin, datetime.time.max, tzinfo=TZ_NC
     ).isoformat()
 
-    # --- 4. REQUÊTE SUPABASE ---
+    # --- 5. REQUÊTE SUPABASE ---
     try:
         query = (
             supabase.table("mc_evenements")
@@ -147,14 +153,16 @@ if role_clean not in roles_autorises:
                 "Alerte Émise",
             ]
 
-            # Conversion flexible et tolérante des dates ISO
-            df_display["Horodatage"] = pd.to_datetime(
-                df_display["Horodatage"], format="ISO8601", errors="coerce"
-            ).dt.strftime("%d/%m/%Y %H:%M:%S")
+            # Conversion flexible et tolérante des dates ISO vers l'heure NC
+            df_display["Horodatage"] = (
+                pd.to_datetime(df_display["Horodatage"], errors="coerce")
+                .dt.tz_convert("Pacific/Noumea")
+                .dt.strftime("%d/%m/%Y %H:%M:%S")
+            )
 
             st.dataframe(df_display, use_container_width=True)
 
-            # --- 5. BOUTON D'EXPORTATION PDF ---
+            # --- 6. BOUTON D'EXPORTATION PDF ---
             st.markdown("---")
 
             # Formater les dates pour l'affichage
