@@ -19,19 +19,32 @@ def show(user_profile: dict):
     role = user_profile.get("role", "agent")
     user_site = user_profile.get("site_id", "DINUM")
 
-    # --- 1. CONTRÔLE D'ACCÈS STRICT ---
-    if role not in ["habilite", "charge_surete"]:
-        st.error(
-            "⛔ Accès refusé : Vous n'avez pas les habilitations requises pour"
-            " consulter le registre."
-        )
-        st.stop()
+# --- 1. CONTRÔLE D'ACCÈS STRICT ---
+# Normalisation du rôle en minuscules et sans espaces superflus
+role_clean = str(role).strip().lower() if role else ""
+
+# Liste des rôles autorisés à consulter le registre
+roles_autorises = ["habilite", "charge_surete", "admin", "super_admin"]
+
+if role_clean not in roles_autorises:
+    st.error(
+        "⛔ Accès refusé : Vous n'avez pas les habilitations requises pour"
+        " consulter le registre."
+    )
+    st.stop()
 
     # --- 2. SÉLECTION DU PÉRIMÈTRE DE CONSULTATION ---
     col_perm, _ = st.columns([2, 1])
+    
+    # Normalisation du rôle
+    role_clean = str(role).strip().lower() if role else ""
+    
+    # Rôles ayant une vue globale / multi-sites
+    roles_vue_globale = ["charge_surete", "admin", "super_admin"]
+
     with col_perm:
-        if role == "charge_surete":
-            st.success("👤 **Chargé de Sûreté** — Vue globale multi-sites.")
+        if role_clean in roles_vue_globale:
+            st.success("👤 **Supervision / Administration** — Vue globale multi-sites.")
             selected_site = st.selectbox(
                 "📍 Périmètre d'observation :",
                 ["Tous les sites", "DINUM", "DOUMER"],
