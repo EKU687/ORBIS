@@ -360,11 +360,12 @@ def show():
                         "Actions",
                     ]
 
-                    # Conversion et formatage en heure locale
-                    df["Heure"] = pd.to_datetime(df["Heure"]).dt.tz_convert("Pacific/Noumea").dt.strftime(
-                        "%H:%M:%S"
-                    )
+                    # 1. Conversion souple et tolérante des formats ISO 8601
+                    df["Heure_dt"] = pd.to_datetime(df["Heure"], format="ISO8601", utc=True, errors="coerce")
 
+                    # 2. Conversion vers le fuseau horaire de Nouméa (UTC+11) et formatage HH:MM:SS
+                    df["Heure"] = df["Heure_dt"].dt.tz_convert("Pacific/Noumea").dt.strftime("%H:%M:%S")
+                
                     st.caption(
                         f"Total : {len(df)} événement(s) enregistré(s) pendant cette vacation."
                     )
