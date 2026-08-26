@@ -132,19 +132,24 @@ def calculer_statut_creneau(
     heure_cible_str: str, now_datetime: datetime.datetime, est_faite: bool
 ) -> tuple[str, bool]:
     """
-    Calcule le statut temporel (ACTIF, FUTUR, DEPASSE) avec tolérance de +/- 10 minutes.
-    
-    Retourne:
-        - statut_code (str) : 'EFFECTUEE', 'ACTIF', 'FUTUR', 'DEPASSE'
-        - bouton_actif (bool) : True si l'émargement est autorisé
+    Calcule le statut temporel (ACTIF, FUTUR, DEPASSE) avec tolérance de +/- 10 minutes,
+    en gérant le passage de minuit pour les créneaux de nuit (00:00 -> 05:00).
     """
     if est_faite:
         return "EFFECTUEE", False
 
     h_target, m_target = map(int, heure_cible_str.split(":"))
+
+    # Date cible initiale = aujourd'hui
     dt_cible = now_datetime.replace(
         hour=h_target, minute=m_target, second=0, microsecond=0
     )
+
+    # 🎯 GESTION DU PASSAGE À MINUIT (00h00 -> 05h00)
+    # Si le créneau visé est en début de journée (0h-5h) et qu'on consulte l'après-midi/soirée (>= 12h),
+    # le créneau appartient à la nuit suivante (J+1).
+    if h_target < 12 and now_datetime.hour >= 12:
+        dt_cible += datetime.timedelta(days=1)
 
     # Fenêtre de tolérance +/- 10 minutes
     dt_debut_fenetre = dt_cible - datetime.timedelta(minutes=10)
