@@ -1,6 +1,7 @@
-import datetime
-from pathlib import Path
 import sys
+from pathlib import Path
+import datetime
+import zoneinfo
 import pandas as pd
 import streamlit as st
 
@@ -10,9 +11,18 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.db_client import supabase
 
+# Fuseau horaire Nouvelle-Calédonie (UTC+11)
+TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
+
+
+def get_now_nc() -> datetime.datetime:
+    """Retourne la date et l'heure actuelles en Nouvelle-Calédonie."""
+    return datetime.datetime.now(TZ_NC)
+
 
 def generate_id(prefix: str) -> str:
-    now = datetime.datetime.now()
+    """Génère un identifiant horodaté unique basé sur l'heure locale NC."""
+    now = get_now_nc()
     return f"{prefix}-{now.strftime('%Y%m%d-%H%M%S')}"
 
 
@@ -24,29 +34,24 @@ def show(user_profile: dict | None = None):
         user_profile = st.session_state.get("user_profile", {})
 
     site_actuel = st.session_state.get("site_actif", "DINUM")
-    role = str(user_profile.get("role", "AGENT_SECU")).upper().strip()
-    agent_nom = user_profile.get("full_name", "Responsable")
+    raw_role = user_profile.get("role") or st.session_state.get("role", "AGENT_SECU")
+    role = str(raw_role).upper().strip()
+    agent_nom = user_profile.get("full_name") or st.session_state.get("full_name", "Responsable")
 
-    # --- 1. CONTRÔLE D'ACCÈS (NOUVELLE NOMENCLATURE RÔLES) ---
-    ROLES_AUTORISES = [
-        "ADMIN",
-        "CHARGE_SURETE",
-        "HABI_ORBIS",
-        "COS",
-        "HABILITE",
-    ]
+    # --- 1. CONTRÔLE D'ACCÈS (RESTRICTION STRICTE ADMIN) ---
+    ROLES_AUTORISES = ["ADMIN", "SUPER_ADMIN"]
 
     if role not in ROLES_AUTORISES:
         st.error(
-            "⛔ Accès restreint : Seuls les administrateurs, chargés de sûreté"
-            " et personnes habilitées peuvent gérer les consignes."
+            "⛔ Accès restreint : Seuls les administrateurs "
+            "peuvent gérer les consignes particulières du site."
         )
         st.stop()
 
     st.markdown(f"### 📍 Consignes en cours sur le site **{site_actuel}**")
 
     # --- 2. LECTURE DES CONSIGNES ACTIVES ---
-    now_iso = datetime.datetime.now().isoformat()
+    now_iso = get_now_nc().isoformat()
     try:
         res = (
             supabase.table("consignes")
@@ -111,6 +116,8 @@ def show(user_profile: dict | None = None):
     # --- 4. FORMULAIRE DE CRÉATION D'UNE CONSIGNE ---
     st.subheader("➕ Rédiger une nouvelle consigne temporaire")
 
+    aujourdhui_nc = get_now_nc().date()
+
     with st.form("form_add_consigne", clear_on_submit=True):
         titre = st.text_input(
             "Titre de la consigne *",
@@ -125,13 +132,13 @@ def show(user_profile: dict | None = None):
         with col_d1:
             date_debut = st.date_input(
                 "Date de début",
-                value=datetime.date.today(),
+                value=aujourdhui_nc,
                 format="DD/MM/YYYY",  # Format Français
             )
         with col_d2:
             date_fin = st.date_input(
                 "Date de fin (Expiration)",
-                value=datetime.date.today() + datetime.timedelta(days=7),
+                value=aujourdhui_nc + datetime.timedelta(days=7),
                 format="DD/MM/YYYY",  # Format Français
             )
 
@@ -160,10 +167,10 @@ def show(user_profile: dict | None = None):
             else:
                 csg_ref = generate_id("CSG")
                 dt_start = datetime.datetime.combine(
-                    date_debut, datetime.time.min
+                    date_debut, datetime.time.min, tzinfo=TZ_NC
                 ).isoformat()
                 dt_end = datetime.datetime.combine(
-                    date_fin, datetime.time.max
+                    date_fin, datetime.time.max, tzinfo=TZ_NC
                 ).isoformat()
 
                 payload = {
