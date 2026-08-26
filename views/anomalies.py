@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import datetime
+import zoneinfo
 import streamlit as st
 import pandas as pd
 
@@ -10,17 +11,36 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.db_client import supabase
 
+# Fuseau horaire Nouvelle-Calédonie (UTC+11)
+TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
+
+
+def get_now_nc() -> datetime.datetime:
+    """Retourne la date et l'heure actuelles en Nouvelle-Calédonie."""
+    return datetime.datetime.now(TZ_NC)
+
+
 def generate_id(prefix: str) -> str:
-    now = datetime.datetime.now()
+    """Génère un identifiant horodaté unique basé sur l'heure locale NC."""
+    now = get_now_nc()
     return f"{prefix}-{now.strftime('%Y%m%d-%H%M%S')}"
+
 
 def show():
     st.title("⚠️ Anomalies & Points de Vigilance Site")
 
     site_actuel = st.session_state.get("site_actif", "DINUM")
     user_info = st.session_state.get("user_profile", {"full_name": "Éric KUTER", "role": "agent"})
-    role = user_info.get("role", "agent")
-    agent_nom = user_info.get("full_name", "Agent")
+    
+    raw_role = user_info.get("role") or st.session_state.get("role", "agent")
+    agent_nom = user_info.get("full_name") or st.session_state.get("full_name", "Agent")
+
+    # Normalisation du rôle
+    role_clean = str(raw_role).strip().lower()
+
+    # Rôles habilités à déclarer / résoudre les anomalies
+    roles_privilegies = ["habilite", "charge_surete", "admin", "super_admin"]
+    est_autorise = role_clean in roles_privilegies
 
     st.markdown(f"### 📍 Liste des Anomalies Actives — Site **{site_actuel}**")
 
@@ -42,7 +62,6 @@ def show():
     if anomalies_actives:
         st.info(f"🔔 **{len(anomalies_actives)} anomalie(s) active(s)** sur ce site.")
         
-        # Hauteur bloquée à 320px : l'écran ne s'allonge plus vers le bas !
         with st.container(height=320):
             for ano in anomalies_actives:
                 crit = ano.get("criticite", "MOYENNE")
@@ -52,23 +71,26 @@ def show():
                 with col_info:
                     st.markdown(f"{badge} **[{ano['reference']}] {ano['titre']}** `({ano['statut']})`")
                     st.write(f"└ {ano['description']}")
-                    st.caption(f"Signale par : **{ano['cree_par']}** | Priorite : **{crit}**")
+                    st.caption(f"Signalé par : **{ano['cree_par']}** | Priorité : **{crit}**")
                 
                 with col_btn:
-                    if role in ["habilite", "charge_surete"]:
+                    if est_autorise:
                         if st.button("✅ Résoudre", key=f"btn_res_{ano['id']}", use_container_width=True):
-                            supabase.table("anomalies").update({"statut": "RESOLUE"}).eq("id", ano["id"]).execute()
-                            st.toast("Anomalie marquée comme résolue !", icon="✅")
-                            st.rerun()
+                            try:
+                                supabase.table("anomalies").update({"statut": "RESOLUE"}).eq("id", ano["id"]).execute()
+                                st.toast("Anomalie marquée comme résolue !", icon="✅")
+                                st.rerun()
+                            except Exception as err:
+                                st.error(f"Erreur lors de la résolution : {err}")
                 st.markdown("---")
     else:
         st.success("✅ Aucune anomalie signalée sur ce site. Tout est nominal !")
 
     st.markdown("---")
 
-    # --- 3. FORMULAIRE DE DÉCLARATION (RESERVÉ ADMIN / HABILITÉ) ---
-    if role in ["habilite", "charge_surete"]:
-        st.subheader("➕ Déclarer une nouvelle anomalie (Admin / Habilité)")
+    # --- 3. FORMULAIRE DE DÉCLARATION (RÉSERVÉ ADMIN / SUPERVISION / HABILITÉ) ---
+    if est_autorise:
+        st.subheader("➕ Déclarer une nouvelle anomalie (Admin / Supervision / Habilité)")
 
         with st.form("form_add_anomalie", clear_on_submit=True):
             titre = st.text_input("Titre de l'anomalie *", placeholder="Ex: Lampadaire HS parking P2, Véhicule hors site...")
@@ -104,4 +126,4 @@ def show():
                     except Exception as e:
                         st.error(f"Erreur d'enregistrement : {e}")
     else:
-        st.info("ℹ️ *Seuls les chargés de sûreté et personnes habilitées peuvent déclarer ou clôturer des anomalies.*")
+        st.info("ℹ️ *Seuls les chargés de sûreté, administrateurs et personnes habilitées peuvent déclarer ou clôturer des anomalies.*")
