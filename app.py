@@ -21,22 +21,6 @@ if str(ROOT_DIR) not in sys.path:
 from utils.db_client import supabase
 from views import login
 
-# --- CONFIGURATION DE LA PAGE ---
-st.set_page_config(
-    page_title="ORBIS - Main Courante V3",
-    page_icon="🌐",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# =========================================================================
-# 1. VERROU D'AUTHENTIFICATION SÉCURISÉ
-# =========================================================================
-if not st.session_state.get("authenticated", False):
-    login.show_login_page()
-    st.stop()  # Interrompt l'exécution si non authentifié
-
-
 # =========================================================================
 # 2. HELPER : CHARGEMENT DYNAMIQUE DE LA BASE DE SITES
 # =========================================================================
