@@ -38,17 +38,10 @@ def get_now_nc() -> datetime.datetime:
 
 
 def est_jour_non_ouvre(date_cible: datetime.date) -> tuple[bool, str]:
-    """Détermine si la date est un jour non travaillé (Week-End ou Férié Nouvelle-Calédonie).
-
-    Retourne:
-        - est_non_ouvre (bool): True si le site est fermé en journée
-        - motif (str): Description du régime ('Week-End' ou nom du jour férié)
-    """
-    # 1. Contrôle du Week-End (5 = Samedi, 6 = Dimanche)
+    """Détermine si la date est un jour non travaillé (Week-End ou Férié Nouvelle-Calédonie)."""
     if date_cible.weekday() in [5, 6]:
         return True, "Week-End"
 
-    # 2. Contrôle des Jours Fériés en Nouvelle-Calédonie (Code Pays: NC)
     if HAS_HOLIDAYS:
         feries_nc = holidays.NC(years=date_cible.year)
         if date_cible in feries_nc:
@@ -64,11 +57,7 @@ def generer_grille_rondes_du_jour(date_cible: datetime.date) -> list[dict]:
 
     grille = []
 
-    # =========================================================================
     # BLOC 1 : SOIRÉE & DÉBUT DE NUIT (20:00 -> 23:00)
-    # =========================================================================
-
-    # 1. Créneau 20:00 (Fermeture globale en semaine vs Ronde extérieure si non ouvré)
     if not est_non_ouvre:
         grille.append({
             "heure_cible": "20:00",
@@ -82,7 +71,6 @@ def generer_grille_rondes_du_jour(date_cible: datetime.date) -> list[dict]:
             "frequence": f"Nuit {motif}",
         })
 
-    # 2. Rondes du soir (21:00 -> 23:00)
     for h in ["21:00", "22:00", "23:00"]:
         h_int = int(h.split(":")[0])
         est_ext = h_int % 2 == 0
@@ -95,11 +83,7 @@ def generer_grille_rondes_du_jour(date_cible: datetime.date) -> list[dict]:
             "frequence": "Nuit (Int. 1h / Ext. 2h)",
         })
 
-    # =========================================================================
     # BLOC 2 : MILIEU & FIN DE NUIT (00:00 -> 05:00)
-    # =========================================================================
-
-    # 3. Rondes du milieu de nuit (00:00 -> 04:00)
     for h in ["00:00", "01:00", "02:00", "03:00", "04:00"]:
         h_int = int(h.split(":")[0])
         est_ext = h_int % 2 == 0
@@ -112,7 +96,6 @@ def generer_grille_rondes_du_jour(date_cible: datetime.date) -> list[dict]:
             "frequence": "Nuit (Int. 1h / Ext. 2h)",
         })
 
-    # 4. Créneau 05:00 (Ouverture site en semaine vs Ronde extérieure si non ouvré)
     if not est_non_ouvre:
         grille.append({
             "heure_cible": "05:00",
@@ -126,9 +109,7 @@ def generer_grille_rondes_du_jour(date_cible: datetime.date) -> list[dict]:
             "frequence": f"Nuit {motif}",
         })
 
-    # =========================================================================
     # BLOC 3 : JOURNÉE COMPLÈTE (06:00 -> 19:00) - Uniquement Week-End / Férié
-    # =========================================================================
     if est_non_ouvre:
         for h_num in range(6, 20):
             h_str = f"{h_num:02d}:00"
@@ -147,8 +128,37 @@ def generer_grille_rondes_du_jour(date_cible: datetime.date) -> list[dict]:
     return grille
 
 
+def calculer_statut_creneau(
+    heure_cible_str: str, now_datetime: datetime.datetime, est_faite: bool
+) -> tuple[str, bool]:
+    """
+    Calcule le statut temporel (ACTIF, FUTUR, DEPASSE) avec tolérance de +/- 10 minutes.
+    
+    Retourne:
+        - statut_code (str) : 'EFFECTUEE', 'ACTIF', 'FUTUR', 'DEPASSE'
+        - bouton_actif (bool) : True si l'émargement est autorisé
+    """
+    if est_faite:
+        return "EFFECTUEE", False
+
+    h_target, m_target = map(int, heure_cible_str.split(":"))
+    dt_cible = now_datetime.replace(
+        hour=h_target, minute=m_target, second=0, microsecond=0
+    )
+
+    # Fenêtre de tolérance +/- 10 minutes
+    dt_debut_fenetre = dt_cible - datetime.timedelta(minutes=10)
+    dt_fin_fenetre = dt_cible + datetime.timedelta(minutes=10)
+
+    if now_datetime < dt_debut_fenetre:
+        return "FUTUR", False
+    elif dt_debut_fenetre <= now_datetime <= dt_fin_fenetre:
+        return "ACTIF", True
+    else:
+        return "DEPASSE", False
+
+
 def get_or_create_vacation_id(site_id: str, agent_nom: str) -> str:
-    """Récupère l'UUID réel de la dernière vacation ouverte sur le site, ou en crée une nouvelle."""
     if (
         st.session_state.get("vacation_id")
         and len(str(st.session_state["vacation_id"])) == 36
@@ -195,7 +205,6 @@ def envoyer_email_anomalie_ronde(
     observation: str,
     agent_garde: str,
 ):
-    """Envoie une notification par email spécifique au format 'Alerte Anomalie Ronde'."""
     if not HAS_EMAIL:
         return
 
@@ -223,19 +232,12 @@ def show():
 
     vac_id = get_or_create_vacation_id(site_actuel, agent_connecte)
 
-    # Récupération de l'horodatage précis en Nouvelle-Calédonie
     now_nc = get_now_nc()
     today_dt = now_nc.date()
     heure_courante = now_nc.hour
 
     nom_jour_fr = [
-        "Lundi",
-        "Mardi",
-        "Mercredi",
-        "Jeudi",
-        "Vendredi",
-        "Samedi",
-        "Dimanche",
+        "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"
     ][today_dt.weekday()]
 
     st.caption(
@@ -258,7 +260,6 @@ def show():
             " (05h00) & Fermeture Globale (20h00)."
         )
 
-        # Affichage d'un bandeau d'information durant la période d'ouverture en semaine
         if 8 <= heure_courante < 16:
             st.warning(
                 "☀️ **Période Ouvrée (08h00 - 16h00) : Hors Couverture Rondes Systématiques.**\n\n"
@@ -282,149 +283,167 @@ def show():
     except Exception as e:
         st.error(f"❌ Erreur de lecture BDD Rondes : {e}")
 
-    # 2. Affichage des cartes de rondes
+    # 2. Affichage des cartes de rondes avec calcul du statut temporel
     for ronde in grille_rondes:
         h_target = ronde["heure_cible"]
         type_ronde = ronde["type"]
         ref_cle = f"REF-RONDE-{today_dt.strftime('%Y%m%d')}-{h_target}"
 
         est_faite = ref_cle in rondes_validees
+        statut_code, bouton_actif = calculer_statut_creneau(
+            h_target, now_nc, est_faite
+        )
 
         with st.container(border=True):
             col_horaire, col_desc, col_action = st.columns([1.5, 3, 2.5])
 
             with col_horaire:
                 st.markdown(f"🕒 **Créneau : {h_target}**")
-                st.caption(f"Mode : {ronde['frequence']}")
+                st.caption(f"Tolérance : ±10 min")
 
             with col_desc:
                 st.markdown(f"🏃 **{type_ronde}**")
+                
                 if est_faite:
                     ev_info = rondes_validees[ref_cle]
                     dt_valide = ev_info.get("horodatage", "")[11:16]
                     agent_nom = ev_info.get("agent_nom", "Agent")
                     st.success(f"✅ **Effectuée à {dt_valide}** par {agent_nom}")
                     st.caption(f"Obs : {ev_info.get('description', 'RAS')}")
-                else:
-                    st.warning("⏳ **Ronde non effectuée**")
+                elif statut_code == "ACTIF":
+                    st.success("🟢 **Créneau ACTIF — Émargement Ouvert**")
+                elif statut_code == "FUTUR":
+                    st.info("⚪ **Créneau à venir (Bouton inactif)**")
+                elif statut_code == "DEPASSE":
+                    st.error("🔴 **Créneau DÉPASSÉ — Ronde non effectuée**")
 
             with col_action:
                 if not est_faite:
-                    with st.popover(
-                        f"📝 Émarger ronde {h_target}", use_container_width=True
-                    ):
-                        st.markdown(f"**Émargement Ronde {h_target}**")
-
-                        observation = st.text_input(
-                            "Observations / Consignes :",
-                            value="R.A.S. - Parcours effectué sans anomalie.",
-                            key=f"obs_{h_target}",
-                        )
-
-                        has_anomalie = st.checkbox(
-                            "⚠️ Signaler une anomalie constatée",
-                            key=f"ano_{h_target}",
-                        )
-
-                        notif_surete = False
-                        if has_anomalie:
-                            st.error(
-                                "🚨 Une entrée sera créée automatiquement dans"
-                                " la Main Courante !"
-                            )
-                            notif_surete = st.checkbox(
-                                "✉️ Prévenir immédiatement le Chargé de Sûreté"
-                                " par Email",
-                                value=True,
-                                key=f"notif_{h_target}",
-                            )
-
-                        if st.button(
-                            "✅ Valider l'émargement",
-                            key=f"btn_{h_target}",
-                            type="primary",
-                            use_container_width=True,
+                    if bouton_actif:
+                        with st.popover(
+                            f"📝 Émarger ronde {h_target}", use_container_width=True
                         ):
-                            now_nc_local = get_now_nc()
-                            ref_time = now_nc_local.strftime("%Y%m%d-%H%M%S")
+                            st.markdown(f"**Émargement Ronde {h_target}**")
 
-                            payload_ronde = {
-                                "reference": ref_cle,
-                                "vacation_id": vac_id,
-                                "site_id": site_actuel,
-                                "agent_nom": agent_connecte,
-                                "horodatage": now_nc_local.isoformat(),
-                                "type_evenement": "RONDE",
-                                "description": (
-                                    f"Ronde {type_ronde} ({h_target}) :"
-                                    f" {observation}"
-                                ),
-                                "actions_menees": (
-                                    "Anomalie signalée et transmise"
-                                    if has_anomalie
-                                    else "Parcours conforme (RAS)"
-                                ),
-                            }
+                            observation = st.text_input(
+                                "Observations / Consignes :",
+                                value="R.A.S. - Parcours effectué sans anomalie.",
+                                key=f"obs_{h_target}",
+                            )
 
-                            try:
-                                supabase.table("mc_evenements").insert(
-                                    payload_ronde
-                                ).execute()
+                            has_anomalie = st.checkbox(
+                                "⚠️ Signaler une anomalie constatée",
+                                key=f"ano_{h_target}",
+                            )
 
-                                if has_anomalie:
-                                    payload_anomalie = {
-                                        "reference": (
-                                            f"REF-ANO-RONDE-{ref_time}"
-                                        ),
-                                        "vacation_id": vac_id,
-                                        "site_id": site_actuel,
-                                        "agent_nom": agent_connecte,
-                                        "horodatage": now_nc_local.isoformat(),
-                                        "type_evenement": "ANOMALIE",
-                                        "description": (
-                                            f"⚠️ ANOMALIE DÉTECTÉE lors de la"
-                                            f" Ronde {h_target} ({type_ronde}) :"
-                                            f" {observation}"
-                                        ),
-                                        "actions_menees": (
-                                            "Consigné depuis le module Rondes."
-                                            " Sûreté informée."
-                                            if notif_surete
-                                            else "Consigné depuis le module"
-                                                 " Rondes."
-                                        ),
-                                    }
+                            notif_surete = False
+                            if has_anomalie:
+                                st.error(
+                                    "🚨 Une entrée sera créée automatiquement dans"
+                                    " la Main Courante !"
+                                )
+                                notif_surete = st.checkbox(
+                                    "✉️ Prévenir immédiatement le Chargé de Sûreté"
+                                    " par Email",
+                                    value=True,
+                                    key=f"notif_{h_target}",
+                                )
+
+                            if st.button(
+                                "✅ Valider l'émargement",
+                                key=f"btn_{h_target}",
+                                type="primary",
+                                use_container_width=True,
+                            ):
+                                now_nc_local = get_now_nc()
+                                ref_time = now_nc_local.strftime("%Y%m%d-%H%M%S")
+
+                                payload_ronde = {
+                                    "reference": ref_cle,
+                                    "vacation_id": vac_id,
+                                    "site_id": site_actuel,
+                                    "agent_nom": agent_connecte,
+                                    "horodatage": now_nc_local.isoformat(),
+                                    "type_evenement": "RONDE",
+                                    "description": (
+                                        f"Ronde {type_ronde} ({h_target}) :"
+                                        f" {observation}"
+                                    ),
+                                    "actions_menees": (
+                                        "Anomalie signalée et transmise"
+                                        if has_anomalie
+                                        else "Parcours conforme (RAS)"
+                                    ),
+                                }
+
+                                try:
                                     supabase.table("mc_evenements").insert(
-                                        payload_anomalie
+                                        payload_ronde
                                     ).execute()
 
-                                    if notif_surete and HAS_EMAIL:
-                                        try:
-                                            envoyer_email_anomalie_ronde(
-                                                site=site_actuel,
-                                                h_cible=h_target,
-                                                type_ronde=type_ronde,
-                                                heure_constat=now_nc_local.strftime(
-                                                    "%H:%M"
-                                                ),
-                                                observation=observation,
-                                                agent_garde=agent_connecte,
-                                            )
-                                            st.toast(
-                                                "Sûreté notifiée par email !",
-                                                icon="✉️",
-                                            )
-                                        except Exception as mail_err:
-                                            st.warning(
-                                                "Note : Email non transmitted"
-                                                f" ({mail_err})"
-                                            )
+                                    if has_anomalie:
+                                        payload_anomalie = {
+                                            "reference": (
+                                                f"REF-ANO-RONDE-{ref_time}"
+                                            ),
+                                            "vacation_id": vac_id,
+                                            "site_id": site_actuel,
+                                            "agent_nom": agent_connecte,
+                                            "horodatage": now_nc_local.isoformat(),
+                                            "type_evenement": "ANOMALIE",
+                                            "description": (
+                                                f"⚠️ ANOMALIE DÉTECTÉE lors de la"
+                                                f" Ronde {h_target} ({type_ronde}) :"
+                                                f" {observation}"
+                                            ),
+                                            "actions_menees": (
+                                                "Consigné depuis le module Rondes."
+                                                " Sûreté informée."
+                                                if notif_surete
+                                                else "Consigné depuis le module"
+                                                     " Rondes."
+                                            ),
+                                        }
+                                        supabase.table("mc_evenements").insert(
+                                            payload_anomalie
+                                        ).execute()
 
-                                st.toast(
-                                    f"Ronde {h_target} consignée avec succès !",
-                                    icon="✅",
-                                )
-                                st.rerun()
+                                        if notif_surete and HAS_EMAIL:
+                                            try:
+                                                envoyer_email_anomalie_ronde(
+                                                    site=site_actuel,
+                                                    h_cible=h_target,
+                                                    type_ronde=type_ronde,
+                                                    heure_constat=now_nc_local.strftime(
+                                                        "%H:%M"
+                                                    ),
+                                                    observation=observation,
+                                                    agent_garde=agent_connecte,
+                                                )
+                                                st.toast(
+                                                    "Sûreté notifiée par email !",
+                                                    icon="✉️",
+                                                )
+                                            except Exception as mail_err:
+                                                st.warning(
+                                                    "Note : Email non transmis"
+                                                    f" ({mail_err})"
+                                                )
 
-                            except Exception as err:
-                                st.error(f"Erreur d'enregistrement : {err}")
+                                    st.toast(
+                                        f"Ronde {h_target} consignée avec succès !",
+                                        icon="✅",
+                                    )
+                                    st.rerun()
+
+                                except Exception as err:
+                                    st.error(f"Erreur d'enregistrement : {err}")
+                    else:
+                        # Libellé adapté au statut pour le bouton grisé
+                        btn_label = "🔒 Créneau futur" if statut_code == "FUTUR" else "🔒 Hors délai"
+                        st.button(
+                            btn_label,
+                            key=f"btn_disabled_{h_target}",
+                            disabled=True,
+                            use_container_width=True,
+                        )
