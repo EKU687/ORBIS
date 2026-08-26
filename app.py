@@ -205,8 +205,8 @@ menu_options = {
 }
 
 # Consultation du registre historique (Haute habilitation)
-HAUTE_HABILITATION = ["HABI_ORBIS", "CHARGE_SURETE", "ADMIN", "COS", "SUPER_ADMIN"]
-if role_actif in HAUTE_HABILITATION:
+ROLES_REGISTRE = ["HABI_ORBIS", "CHARGE_SURETE", "ADMIN", "COS", "SUPER_ADMIN"]
+if role_actif in ROLES_REGISTRE:
     menu_options["📖 Consulter Registre"] = "registre"
 
 # Modules opérationnels communs à tous les agents (y compris AGENT_SECU)
