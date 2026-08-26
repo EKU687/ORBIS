@@ -22,6 +22,7 @@ def get_now_nc() -> datetime.datetime:
     return datetime.datetime.now(TZ_NC)
 
 
+# ✉️ TENTATIVE D'IMPORT DU MODULE EMAIL
 try:
     from utils.email_sender import envoyer_notification_passage_poste_securite
 
@@ -31,7 +32,7 @@ except Exception:
 
 
 def injecter_style_css():
-    """Injecte le style CSS pour garantir le contour des cartes métriques."""
+    """Injecte le style CSS pour les cartes métriques et les contours colorés."""
     st.markdown(
         """
         <style>
@@ -40,7 +41,7 @@ def injecter_style_css():
             border-radius: 10px !important;
             padding: 15px !important;
             border-left: 6px solid #0288d1 !important;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08) !important;
             text-align: center !important;
         }
         .metric-box-departures {
@@ -48,7 +49,7 @@ def injecter_style_css():
             border-radius: 10px !important;
             padding: 15px !important;
             border-left: 6px solid #d32f2f !important;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08) !important;
             text-align: center !important;
         }
         .metric-number {
@@ -73,6 +74,7 @@ def notifier_surete_passage(
     num_piece: str,
     agent_garde: str,
 ):
+    """Transmet l'alerte email au Chargé de Sûreté."""
     if not HAS_EMAIL_SENDER:
         return
 
@@ -91,6 +93,7 @@ def notifier_surete_passage(
 
 
 def fetch_sites_from_bdd() -> dict[str, dict]:
+    """Récupère tous les sites depuis Supabase en s'appuyant principalement sur 'nom_site'."""
     sites_map = {}
     try:
         res = (
@@ -100,26 +103,33 @@ def fetch_sites_from_bdd() -> dict[str, dict]:
         )
         if res.data:
             for row in res.data:
-                code = row.get("code_site", "").strip().upper()
-                if code:
-                    sites_map[code] = {
+                nom = row.get("nom_site", "").strip()
+                code = row.get("code_site", "").strip()
+                
+                # Clé primaire d'affichage basée sur nom_site
+                key_name = nom if nom else code
+                if key_name:
+                    sites_map[key_name.upper()] = {
                         "uuid": str(row.get("id")),
-                        "nom": row.get("nom_site") or code,
+                        "nom_site": key_name,
+                        "code_site": code,
                     }
     except Exception as e:
-        st.error(f"Erreur de lecture BDD Sites : {e}")
+        st.error(f"Erreur de lecture de la table BDD 'Sites' : {e}")
 
     if not sites_map:
         sites_map = {
-            "DINUM": {"uuid": None, "nom": "SITE OUEMO"},
-            "DOUMER": {"uuid": None, "nom": "SITE DOUMER"},
+            "DINUM": {"uuid": None, "nom_site": "DINUM", "code_site": "DINUM"},
+            "SITE DOUMER": {"uuid": None, "nom_site": "SITE DOUMER", "code_site": "DOUMER"},
+            "SITE OUEMO": {"uuid": None, "nom_site": "SITE OUEMO", "code_site": "OUEMO"},
         }
     return sites_map
 
 
 def fetch_mouvements_jour(
-    site_code: str, site_uuid: str, date_cible: datetime.date
+    site_nom: str, site_uuid: str, date_cible: datetime.date
 ):
+    """Interroge Agents_Publics et Prestataires pour récupérer les flux du jour sur le site."""
     date_str = date_cible.isoformat()
     arrivants = []
     departs = []
@@ -132,6 +142,7 @@ def fetch_mouvements_jour(
     statuts_globaux = list(set(STATUTS_ARRIVEE + STATUTS_DEPART))
 
     try:
+        # 1. RÉCUPÉRATION DES DIRECTIONS RATTACHÉES À CE SITE
         res_dir = (
             supabase.table("Directions")
             .select("sigle_direction, code_direction")
@@ -147,6 +158,7 @@ def fetch_mouvements_jour(
                 if d.get("code_direction"):
                     directions_du_site.add(d["code_direction"].upper())
 
+        # 2. FLUX DES AGENTS PUBLICS
         res_agents = (
             supabase.table("Agents_Publics")
             .select("*")
@@ -204,6 +216,7 @@ def fetch_mouvements_jour(
     except Exception as e:
         st.warning(f"Note (Agents_Publics) : {e}")
 
+    # 3. FLUX DES PRESTATAIRES
     try:
         res_prest = (
             supabase.table("Prestataires")
@@ -262,8 +275,9 @@ def fetch_mouvements_jour(
 
 @st.fragment(run_every=300)
 def render_mouvements_console(
-    site_actuel: str, site_uuid: str, date_cible: datetime.date, site_cle: str
+    site_actuel: str, site_uuid: str, date_cible: datetime.date, est_admin: bool
 ):
+    """Fragment Streamlit réactualisé toutes les 5 minutes (300 secondes)."""
     injecter_style_css()
 
     now_str = get_now_nc().strftime("%H:%M:%S")
@@ -271,8 +285,6 @@ def render_mouvements_console(
         f"🕒 **Console Active** | Auto-synchro BDD : {now_str} | Site :"
         f" **{site_actuel}**"
     )
-
-    est_admin = site_cle in ["ADMIN", "SUPER_ADMIN"]
 
     liste_arrivants, liste_departs = fetch_mouvements_jour(
         site_actuel, site_uuid, date_cible
@@ -317,6 +329,7 @@ def render_mouvements_console(
     tab_arrivants, tab_departs = st.tabs([label_tab_arr, label_tab_dep])
     agent_connecte = f"Agent PC ({site_actuel})"
 
+    # --- TAB 1 : ARRIVÉES ---
     with tab_arrivants:
         st.subheader(
             f"📋 Nouveaux Arrivants du {date_cible.strftime('%d/%m/%Y')} sur"
@@ -500,6 +513,7 @@ def render_mouvements_console(
                 f" du {date_cible.strftime('%d/%m/%Y')}."
             )
 
+    # --- TAB 2 : DÉPARTS ---
     with tab_departs:
         st.subheader(
             "🚪 Fin d'Accès & Restitution de Badges du"
@@ -546,15 +560,17 @@ def render_mouvements_console(
 
 
 def show():
-    """Point d'entrée principal pour le module Mouvements."""
+    """Point d'entrée principal pour la console Mouvements."""
     injecter_style_css()
 
     st.title("🛡️ IDENTIS — Gestion des Mouvements Sécurité")
     st.caption("Console d'affichage permanent du Poste de Garde (Arrivées & Départs).")
 
+    # 1. RÉCUPÉRATION DES SITES (PAR NOM DE SITE)
     sites_dict = fetch_sites_from_bdd()
-    codes_valides = list(sites_dict.keys())
+    noms_sites_valides = list(sites_dict.keys())
 
+    # 2. RESOLUTION DU SITE SOLICITÉ (URL VS SESSION)
     query_params = st.query_params
     site_param = query_params.get("site", None)
 
@@ -562,31 +578,52 @@ def show():
     raw_role = user_info.get("role") or st.session_state.get("role", "AGENT_SECU")
     role_clean = str(raw_role).upper().strip()
 
+    site_sollicite = None
+    est_admin_session = role_clean in ["ADMIN", "SUPER_ADMIN", "CHARGE_SURETE"]
+    site_cle_admin = False
+
+    # A. Détection depuis l'URL (?site=SITE%20DOUMER ou ?site=ADMIN)
     if site_param:
-        site_cle = str(site_param).upper().strip()
-    else:
-        site_cle = st.session_state.get("site_actif", "DINUM")
+        val_url = str(site_param).upper().strip()
+        if val_url in ["ADMIN", "SUPER_ADMIN"]:
+            site_cle_admin = True
+        else:
+            # Match direct par nom_site (ex: "SITE DOUMER")
+            if val_url in sites_dict:
+                site_sollicite = val_url
+            else:
+                # Match tolérant par code (ex: "DOUMER")
+                for nom_k, data_v in sites_dict.items():
+                    if data_v["code_site"].upper() == val_url:
+                        site_sollicite = nom_k
+                        break
+
+    # B. Fallback depuis Session State Streamlit
+    if not site_sollicite and not site_cle_admin:
+        session_site = str(st.session_state.get("site_actif", "DINUM")).upper().strip()
+        if session_site in sites_dict:
+            site_sollicite = session_site
+        else:
+            for nom_k, data_v in sites_dict.items():
+                if data_v["code_site"].upper() == session_site:
+                    site_sollicite = nom_k
+                    break
+        if not site_sollicite:
+            site_sollicite = noms_sites_valides[0] if noms_sites_valides else "DINUM"
 
     col_site, col_date, col_refresh = st.columns([2, 1.5, 1])
 
     with col_site:
-        if site_cle in ["ADMIN", "SUPER_ADMIN"] or role_clean in ["ADMIN", "SUPER_ADMIN", "CHARGE_SURETE"]:
-            code_selectionne = st.selectbox(
-                "📍 Site de sécurité (Admin) :",
-                options=codes_valides,
-                format_func=lambda x: f"{x} — {sites_dict[x]['nom']}",
+        if site_cle_admin or est_admin_session:
+            idx_defaut = noms_sites_valides.index(site_sollicite) if site_sollicite in noms_sites_valides else 0
+            site_selectionne = st.selectbox(
+                "📍 Site de sécurité (Supervision) :",
+                options=noms_sites_valides,
+                index=idx_defaut,
             )
-            site_actuel = code_selectionne
-        elif site_cle in codes_valides:
-            site_actuel = site_cle
-            nom_complet = sites_dict[site_actuel]["nom"]
-            st.text_input(
-                "📍 Site du Poste :",
-                value=f"{site_actuel} ({nom_complet})",
-                disabled=True,
-            )
+            site_actuel = site_selectionne
         else:
-            site_actuel = st.session_state.get("site_actif", "DINUM")
+            site_actuel = site_sollicite
             st.info(f"📍 Site actif : **{site_actuel}**")
 
     site_uuid = sites_dict.get(site_actuel, {}).get("uuid")
@@ -601,8 +638,9 @@ def show():
         if st.button("🔄 Rafraîchir", use_container_width=True):
             st.rerun()
 
+    # Rendu final de la console
     render_mouvements_console(
-        site_actuel, site_uuid, date_selectionnee, site_cle
+        site_actuel, site_uuid, date_selectionnee, est_admin=(site_cle_admin or est_admin_session)
     )
 
 
