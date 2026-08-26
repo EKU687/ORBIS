@@ -205,7 +205,7 @@ menu_options = {
 }
 
 # Consultation du registre historique (Haute habilitation)
-ROLES_REGISTRE = ["HABI_ORBIS", "CHARGE_SURETE", "ADMIN", "COS", "SUPER_ADMIN"]
+ROLES_REGISTRE = ["CHARGE_SURETE", "ADMIN", "COS", "SUPER_ADMIN"]
 if role_actif in ROLES_REGISTRE:
     menu_options["📖 Consulter Registre"] = "registre"
 
