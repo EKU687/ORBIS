@@ -21,6 +21,34 @@ if str(ROOT_DIR) not in sys.path:
 from utils.db_client import supabase
 from views import login
 
+# --- CONFIGURATION DE LA PAGE ---
+st.set_page_config(
+    page_title="ORBIS - Main Courante V3",
+    page_icon="🌐",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# =========================================================================
+# 🎯 ACCÈS DIRECT MONITEUR MOUVEMENTS (AVANT VERROU AUTHENTIFICATION)
+# =========================================================================
+query_params = st.query_params
+view_param = query_params.get("view", None)
+
+if view_param == "mouvements":
+    from views import app_mouvements
+
+    app_mouvements.show()
+    st.stop()  # Stoppe le script ici pour le 2nd onglet (pas de login requis)
+
+# =========================================================================
+# 1. VERROU D'AUTHENTIFICATION SÉCURISÉ (POUR TOUT LE RESTE DE L'APP)
+# =========================================================================
+if not st.session_state.get("authenticated", False):
+    login.show_login_page()
+    st.stop()  # Interrompt l'exécution si non authentifié
+
+
 # =========================================================================
 # 2. HELPER : CHARGEMENT DYNAMIQUE DE LA BASE DE SITES
 # =========================================================================
@@ -48,17 +76,17 @@ def charger_sites_actifs() -> list[str]:
 
 
 # =========================================================================
-# 3. RÉCUPÉRATION DU PROFIL & DÉTECTION HABILITATION MULTI-SITES
+# 3. RÉCUPÉRATION SÉCURISÉE DU PROFIL & DÉTECTION HABILITATION MULTI-SITES
 # =========================================================================
-user = st.session_state.get(
-    "user_profile",
-    {
+if "user_profile" not in st.session_state:
+    st.session_state["user_profile"] = {
         "full_name": "KUTER ERIC",
         "role": "ADMIN",
         "site_defaut": "DINUM",
         "service": "Sécurité",
-    },
-)
+    }
+
+user = st.session_state["user_profile"]
 
 # Normalisation du rôle
 role_actif = str(user.get("role", "AGENT_SECU")).upper().strip()
@@ -80,44 +108,33 @@ st.session_state["user_profile"]["role"] = role_actif
 # 4. FONCTION DE CLÔTURE DE VACATION BDD
 # =========================================================================
 def executer_deconnexion_et_cloture():
-    """Clôture la vacation 'EN_COURS' dans la table 'vacations' en renseignant 'fin_at' et 'statut' = 'CLOTUREE'."""
+    """Clôture la vacation 'EN_COURS' dans la table 'vacations'."""
     vac_id = st.session_state.get("vacation_id")
     agent_nom = user.get("full_name", "KUTER ERIC")
     site_id = st.session_state.get("site_actif", "DINUM")
     now_dt = get_now_nc()
 
     try:
-        # A. Clôture par UUID direct
         if vac_id and len(str(vac_id)) == 36:
             supabase.table("vacations").update({
                 "statut": "CLOTUREE",
                 "fin_at": now_dt.isoformat(),
             }).eq("id", vac_id).execute()
-
-        # B. Fallback : Clôture globale des vacations 'EN_COURS' du site
         else:
             supabase.table("vacations").update({
                 "statut": "CLOTUREE",
                 "fin_at": now_dt.isoformat(),
             }).eq("site_id", site_id).eq("statut", "EN_COURS").execute()
 
-        # C. Inscription de l'événement de fin de poste
         payload_fin = {
             "reference": f"REF-FIN-VAC-{now_dt.strftime('%Y%m%d-%H%M%S')}",
-            "vacation_id": vac_id
-            if (vac_id and len(str(vac_id)) == 36)
-            else None,
+            "vacation_id": vac_id if (vac_id and len(str(vac_id)) == 36) else None,
             "site_id": site_id,
             "agent_nom": agent_nom,
             "horodatage": now_dt.isoformat(),
             "type_evenement": "FIN_VACATION",
-            "description": (
-                f"🚪 Déconnexion de {agent_nom} — Clôture automatique de la"
-                " Main Courante."
-            ),
-            "actions_menees": (
-                "Fin de poste enregistrée et vacation fermée (CLOTUREE)."
-            ),
+            "description": f"🚪 Déconnexion de {agent_nom} — Clôture automatique de la Main Courante.",
+            "actions_menees": "Fin de poste enregistrée et vacation fermée (CLOTUREE).",
         }
         supabase.table("mc_evenements").insert(payload_fin).execute()
 
@@ -193,7 +210,7 @@ ROLES_REGISTRE = ["CHARGE_SURETE", "ADMIN", "COS", "SUPER_ADMIN"]
 if role_actif in ROLES_REGISTRE:
     menu_options["📖 Consulter Registre"] = "registre"
 
-# Modules opérationnels communs à tous les agents (y compris AGENT_SECU)
+# Modules opérationnels communs à tous les agents
 menu_options.update({
     "✍️ Visiteur Imprévu": "visiteur_imprevu",
     "👥 Visiteurs Attendus": "visiteurs_attendus",
@@ -239,68 +256,48 @@ if st.sidebar.button(
 # =========================================================================
 # 8. ROUTAGE DES MODULES MÉTIER
 # =========================================================================
-query_params = st.query_params
-view_param = query_params.get("view", None)
-
-# Interception prioritaire du paramètre d'URL direct ?view=mouvements
-if view_param == "mouvements":
-    from views import app_mouvements
-
-    app_mouvements.show()
-
-elif module_actif == "main_courante":
+if module_actif == "main_courante":
     from views import main_courante
-
     main_courante.show()
 
 elif module_actif == "registre":
     from views import registre
-
     registre.show(user)
 
 elif module_actif == "visiteur_imprevu":
     from views import visiteur_imprevu
-
     visiteur_imprevu.show()
 
 elif module_actif == "visiteurs_attendus":
     from views import visiteurs_attendus
-
     visiteurs_attendus.show()
 
 elif module_actif == "suivi_rondes":
     from views import suivi_rondes
-
     suivi_rondes.show()
 
 elif module_actif == "anomalies":
     from views import anomalies
-
     anomalies.show()
 
 elif module_actif == "badges":
     from views import badges
-
     badges.show()
 
 elif module_actif == "permis":
     from views import permis
-
     permis.show()
 
 elif module_actif == "consignes_admin":
     from views import consignes_admin
-
     consignes_admin.show(user)
 
 elif module_actif == "hypervision":
     from views import hypervision
-
     hypervision.show()
 
 elif module_actif == "recherche_prestataires":
     from views import recherche_prestataires
-
     recherche_prestataires.show()
 
 else:
