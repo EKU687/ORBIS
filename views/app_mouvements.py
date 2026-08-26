@@ -2,7 +2,7 @@ import datetime
 from pathlib import Path
 import sys
 import uuid
-from zoneinfo import ZoneInfo
+import zoneinfo
 import streamlit as st
 
 # 🔧 CORRECTIF D'IMPORTATION RACINE
@@ -13,24 +13,22 @@ if str(ROOT_DIR) not in sys.path:
 # 📦 IMPORTS DU PROJET
 from utils.db_client import supabase
 
-# ✉️ IMPORT DIRECT DE TA FONCTION DANS utils/email_sender.py
+# Fuseau horaire Nouvelle-Calédonie (UTC+11)
+TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
+
+
+def get_now_nc() -> datetime.datetime:
+    """Retourne la date et l'heure actuelles en Nouvelle-Calédonie."""
+    return datetime.datetime.now(TZ_NC)
+
+
+# ✉️ IMPORT DIRECT DE LA FONCTION DANS utils/email_sender.py
 try:
     from utils.email_sender import envoyer_notification_passage_poste_securite
 
     HAS_EMAIL_SENDER = True
-    print(
-        "✅ [EMAIL] Fonction 'envoyer_notification_passage_poste_securite'"
-        " chargée avec succès !"
-    )
 except Exception as e:
     HAS_EMAIL_SENDER = False
-    print(f"⚠️ [EMAIL INFO] utils.email_sender non chargé : {e}")
-
-st.set_page_config(
-    page_title="IDENTIS - Mouvements & Sécurité",
-    page_icon="🛡️",
-    layout="wide",
-)
 
 # Style CSS pour les cartes de comptage
 st.markdown(
@@ -76,7 +74,6 @@ def notifier_surete_passage(
 ):
     """Envoie une alerte email au Chargé de Sûreté via utils.email_sender."""
     if not HAS_EMAIL_SENDER:
-        print("⚠️ Envoi d'email ignoré (fonction d'envoi non disponible).")
         return
 
     try:
@@ -89,7 +86,6 @@ def notifier_surete_passage(
             num_piece=num_piece,
             agent_garde=agent_garde,
         )
-        print(f"✉️ Email de notification transmis pour {nom_personne}")
     except Exception as err:
         print(f"⚠️ Erreur lors de l'envoi de l'email : {err}")
 
@@ -126,7 +122,6 @@ def fetch_mouvements_jour(
     site_code: str, site_uuid: str, date_cible: datetime.date
 ):
     """Interroge Agents_Publics et Prestataires pour récupérer :
-
     - Les ARRIVÉES EN ATTENTE (Statuts: IMPRIME, A_LIVRER, EN_COURS_NEDAP)
     - Les DÉPARTS PRÉVUS (Statuts: ACTIF, A_LIVRER, IMPRIME)
     """
@@ -137,15 +132,11 @@ def fetch_mouvements_jour(
     if not site_uuid:
         return arrivants, departs
 
-    # 🎯 SÉPARATION STRICTE SELON LE WORKFLOW MÉTIER
-    STATUTS_ARRIVEE = ["IMPRIME", "A_LIVRER", "EN_COURS_NEDAP"]  # Non encore activés
-    STATUTS_DEPART = ["ACTIF", "A_LIVRER", "IMPRIME"]             # En exploitation
-
-    # Fusion des statuts pour optimiser la requête SQL globale
+    STATUTS_ARRIVEE = ["IMPRIME", "A_LIVRER", "EN_COURS_NEDAP"]
+    STATUTS_DEPART = ["ACTIF", "A_LIVRER", "IMPRIME"]
     statuts_globaux = list(set(STATUTS_ARRIVEE + STATUTS_DEPART))
 
     try:
-        # 1. RÉCUPÉRATION DES DIRECTIONS SITUÉES SUR CE SITE
         res_dir = (
             supabase.table("Directions")
             .select("sigle_direction, code_direction")
@@ -161,7 +152,7 @@ def fetch_mouvements_jour(
                 if d.get("code_direction"):
                     directions_du_site.add(d["code_direction"].upper())
 
-        # 2. AGENTS PUBLICS
+        # Agents Publics
         res_agents = (
             supabase.table("Agents_Publics")
             .select("*")
@@ -186,7 +177,6 @@ def fetch_mouvements_jour(
                         f"{ag.get('nom', '').upper()} {ag.get('prenom', '')}".strip()
                     )
 
-                    # 📥 ARRIVÉE : Seulement si la fiche N'EST PAS ENCORE ACTIF !
                     if (ag.get("date_debut_validite") == date_str) and (ag_statut in STATUTS_ARRIVEE):
                         arrivants.append({
                             "id": ag.get("id"),
@@ -206,7 +196,6 @@ def fetch_mouvements_jour(
                             "source": "Agents_Publics",
                         })
 
-                    # 📤 DÉPART : Agent actif ou en fin de validité
                     if (ag.get("date_fin_validite") == date_str) and (ag_statut in STATUTS_DEPART):
                         departs.append({
                             "id": ag.get("id"),
@@ -221,7 +210,7 @@ def fetch_mouvements_jour(
     except Exception as e:
         st.warning(f"Note (Agents_Publics) : {e}")
 
-    # 3. PRESTATAIRES
+    # Prestataires
     try:
         res_prest = (
             supabase.table("Prestataires")
@@ -245,7 +234,6 @@ def fetch_mouvements_jour(
                         f"{pr.get('nom', '').upper()} {pr.get('prenom', '')}".strip()
                     )
 
-                    # 📥 ARRIVÉE : Seulement si le prestataire N'EST PAS ENCORE ACTIF !
                     if (pr.get("date_debut_validite") == date_str) and (pr_statut in STATUTS_ARRIVEE):
                         arrivants.append({
                             "id": pr.get("id"),
@@ -263,7 +251,6 @@ def fetch_mouvements_jour(
                             "source": "Prestataires",
                         })
 
-                    # 📤 DÉPART :
                     if (pr.get("date_fin_prestation") == date_str) and (pr_statut in STATUTS_DEPART):
                         departs.append({
                             "id": pr.get("id"),
@@ -284,14 +271,13 @@ def fetch_mouvements_jour(
 def render_mouvements_console(
     site_actuel: str, site_uuid: str, date_cible: datetime.date, site_cle: str
 ):
-    now_str = datetime.datetime.now().strftime("%H:%M:%S")
+    now_str = get_now_nc().strftime("%H:%M:%S")
     st.info(
         f"🕒 **Console Active** | Auto-synchro BDD : {now_str} | Site :"
         f" **{site_actuel}**"
     )
 
-    # 🔒 Détermination du rôle Admin
-    est_admin = site_cle == "ADMIN"
+    est_admin = site_cle in ["ADMIN", "SUPER_ADMIN"]
 
     liste_arrivants, liste_departs = fetch_mouvements_jour(
         site_actuel, site_uuid, date_cible
@@ -302,7 +288,6 @@ def render_mouvements_console(
 
     st.markdown("---")
 
-    # --- COMPTEURS DYNAMIQUES ---
     col_count_arr, col_count_dep = st.columns([1, 1])
 
     with col_count_arr:
@@ -331,12 +316,10 @@ def render_mouvements_console(
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # --- ONGLETS FLUX ---
     label_tab_arr = f"📥 ARRIVÉES EN ATTENTE ({nb_arrivants})"
     label_tab_dep = f"📤 DÉPARTS / BADGES À RÉCUPÉRER ({nb_departs})"
 
     tab_arrivants, tab_departs = st.tabs([label_tab_arr, label_tab_dep])
-
     agent_connecte = f"Agent PC ({site_actuel})"
 
     # --- TAB 1 : ARRIVÉES ---
@@ -353,7 +336,6 @@ def render_mouvements_console(
                     f" Service: {item.get('service_str', 'Non défini')}"
                 )
 
-                # Clés d'état uniques mémorisées dans st.session_state
                 key_passage_valide = f"passage_valide_{item['id']}"
                 key_surete_valide = f"surete_valide_{item['id']}"
 
@@ -365,7 +347,6 @@ def render_mouvements_console(
                 )
 
                 with st.expander(titre_accordeon, expanded=False):
-                    # 1. INFORMATIONS IDENTIS (Lecture seule)
                     c_info1, c_info2, c_info3 = st.columns(3)
                     with c_info1:
                         st.markdown(
@@ -385,10 +366,7 @@ def render_mouvements_console(
 
                     st.markdown("---")
 
-                    # 2. SECTION GUICHET : AGENT DE SÉCURITÉ
-                    st.markdown(
-                        "##### 🛂 1. Contrôle d'Identité (Agent de Garde)"
-                    )
+                    st.markdown("##### 🛂 1. Contrôle d'Identité (Agent de Garde)")
                     f_col1, f_col2 = st.columns(2)
 
                     with f_col1:
@@ -422,20 +400,16 @@ def render_mouvements_console(
                     btn_agent_passage = st.button(
                         libelle_bouton_p1,
                         key=f"btn_pass_{item['id']}",
-                        type="secondary"
-                        if passage_deja_enregistre
-                        else "primary",
+                        type="secondary" if passage_deja_enregistre else "primary",
                         use_container_width=True,
                         disabled=passage_deja_enregistre,
                     )
 
                     if btn_agent_passage and not passage_deja_enregistre:
                         if not num_piece.strip():
-                            st.error(
-                                "⚠️ Saisissez le N° de pièce d'identité !"
-                            )
+                            st.error("⚠️ Saisissez le N° de pièce d'identité !")
                         else:
-                            now_dt = datetime.datetime.now()
+                            now_dt = get_now_nc()
                             heure_passage = now_dt.strftime("%H:%M")
 
                             st.session_state[key_passage_valide] = True
@@ -462,15 +436,12 @@ def render_mouvements_console(
 
                     st.markdown("---")
 
-                    # 3. SECTION SÛRETÉ : CHECK-LIST & ÉMARGEMENT VISUEL
                     st.markdown(
                         "##### ⚙️ 2. Check-List de Conformité & Émargement"
                         " (Chargé de Sûreté / Admin)"
                     )
 
-                    desactiver_p2 = (
-                        not est_admin
-                    ) or surete_deja_enregistree
+                    desactiver_p2 = (not est_admin) or surete_deja_enregistree
 
                     with st.container(border=True):
                         chk1, chk2, chk3, chk4 = st.columns(4)
@@ -502,8 +473,7 @@ def render_mouvements_console(
                     if not est_admin:
                         st.caption(
                             "🔒 **Information Poste de Garde :** La check-list"
-                            " et l'émargement final sont réservés au Chargé"
-                            " de Sûreté."
+                            " et l'émargement final sont réservés au Chargé de Sûreté."
                         )
                     else:
                         st.markdown("<br>", unsafe_allow_html=True)
@@ -511,28 +481,21 @@ def render_mouvements_console(
                         libelle_bouton_p2 = (
                             "🔒 Émargement Sûreté déjà validé"
                             if surete_deja_enregistree
-                            else (
-                                "🏁 Valider l'Émargement Sûreté pour"
-                                f" {item['nom']}"
-                            )
+                            else f"🏁 Valider l'Émargement Sûreté pour {item['nom']}"
                         )
 
                         btn_cloturer_final = st.button(
                             libelle_bouton_p2,
                             key=f"btn_cloture_{item['id']}",
-                            type="secondary"
-                            if surete_deja_enregistree
-                            else "primary",
+                            type="secondary" if surete_deja_enregistree else "primary",
                             use_container_width=True,
                             disabled=surete_deja_enregistree,
                         )
 
                         if btn_cloturer_final and not surete_deja_enregistree:
                             st.session_state[key_surete_valide] = True
-
                             st.success(
-                                "🏁 Émargement Sûreté validé pour"
-                                f" **{item['nom']}** !"
+                                f"🏁 Émargement Sûreté validé pour **{item['nom']}** !"
                             )
                             st.toast("Émargement verrouillé", icon="🔒")
                             st.rerun()
@@ -585,39 +548,36 @@ def render_mouvements_console(
         else:
             st.info(
                 "ℹ️ Aucun départ/fin d'accès prévu pour le site"
-                f" {site_actuel} à la date du"
-                f" {date_cible.strftime('%d/%m/%Y')}."
+                f" {site_actuel} à la date du {date_cible.strftime('%d/%m/%Y')}."
             )
 
 
-def main():
+def show():
+    """Point d'entrée principal pour le module Mouvements (Vues intégrées et Onglet dédié)."""
     st.title("🛡️ IDENTIS — Gestion des Mouvements Sécurité")
-    st.caption(
-        "Console d'affichage permanent du Poste de Garde (Arrivées & Départs)."
-    )
+    st.caption("Console d'affichage permanent du Poste de Garde (Arrivées & Départs).")
 
-    # --- 1. CHARGEMENT BDD SITES ---
+    # 1. CHARGEMENT BDD SITES
     sites_dict = fetch_sites_from_bdd()
     codes_valides = list(sites_dict.keys())
 
-    # --- 2. CONTROLE URL ---
+    # 2. DÉTECTION DU SITE (query_params URL ou Session State ORBIS)
     query_params = st.query_params
     site_param = query_params.get("site", None)
 
-    if not site_param:
-        st.error("🚫 **Accès non autorisé**")
-        st.warning(
-            "Aucun paramètre de site détecté. Veuillez utiliser un raccourci"
-            " officiel (ex: `?site=DINUM` ou `?site=ADMIN`)."
-        )
-        st.stop()
+    user_info = st.session_state.get("user_profile", {})
+    raw_role = user_info.get("role") or st.session_state.get("role", "AGENT_SECU")
+    role_clean = str(raw_role).upper().strip()
 
-    site_cle = str(site_param).upper().strip()
+    if site_param:
+        site_cle = str(site_param).upper().strip()
+    else:
+        site_cle = st.session_state.get("site_actif", "DINUM")
 
     col_site, col_date, col_refresh = st.columns([2, 1.5, 1])
 
     with col_site:
-        if site_cle == "ADMIN":
+        if site_cle in ["ADMIN", "SUPER_ADMIN"] or role_clean in ["ADMIN", "SUPER_ADMIN", "CHARGE_SURETE"]:
             code_selectionne = st.selectbox(
                 "📍 Site de sécurité (Admin) :",
                 options=codes_valides,
@@ -633,15 +593,14 @@ def main():
                 disabled=True,
             )
         else:
-            st.error(f"❌ **Site inconnu :** `{site_cle}`")
-            st.info(f"Sites en BDD : {', '.join(codes_valides)}, `ADMIN`.")
-            st.stop()
+            site_actuel = st.session_state.get("site_actif", "DINUM")
+            st.info(f"📍 Site actif : **{site_actuel}**")
 
     site_uuid = sites_dict.get(site_actuel, {}).get("uuid")
 
     with col_date:
         date_selectionnee = st.date_input(
-            "📅 Date contrôlée :", value=datetime.date.today()
+            "📅 Date contrôlée :", value=get_now_nc().date()
         )
 
     with col_refresh:
@@ -656,4 +615,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    show()
