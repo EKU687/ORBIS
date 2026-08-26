@@ -1,7 +1,17 @@
 import datetime
 from pathlib import Path
 import sys
+import zoneinfo
 import streamlit as st
+
+# Fuseau horaire Nouvelle-Calédonie (UTC+11)
+TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
+
+
+def get_now_nc() -> datetime.datetime:
+    """Retourne la date et l'heure actuelles en Nouvelle-Calédonie."""
+    return datetime.datetime.now(TZ_NC)
+
 
 # --- FIX DES CHEMINS PYTHON ---
 ROOT_DIR = Path(__file__).resolve().parent
@@ -70,11 +80,11 @@ user = st.session_state.get(
 role_actif = str(user.get("role", "AGENT_SECU")).upper().strip()
 site_defaut_user = user.get("site_defaut", "DINUM")
 
-# 🎯 Chargement de la liste dynamique des sites depuis la BDD 'Sites'
+# Chargement de la liste dynamique des sites depuis la BDD 'Sites'
 SITES_DISPONIBLES = charger_sites_actifs()
 
 # Rôles ayant la capacité de basculer d'un site à l'autre
-ROLES_MULTI_SITES = ["CHARGE_SURETE", "ADMIN", "COS"]
+ROLES_MULTI_SITES = ["CHARGE_SURETE", "ADMIN", "COS", "SUPER_ADMIN"]
 est_multi_sites = (role_actif in ROLES_MULTI_SITES) or (
     site_defaut_user in ["TOUS", "ALL"]
 )
@@ -90,7 +100,7 @@ def executer_deconnexion_et_cloture():
     vac_id = st.session_state.get("vacation_id")
     agent_nom = user.get("full_name", "KUTER ERIC")
     site_id = st.session_state.get("site_actif", "DINUM")
-    now_dt = datetime.datetime.now()
+    now_dt = get_now_nc()
 
     try:
         # A. Clôture par UUID direct
@@ -147,7 +157,7 @@ st.sidebar.caption(
     f" `{role_actif}`"
 )
 
-# 🎯 Branchement dynamique du sélecteur de site BDD
+# Branchement dynamique du sélecteur de site BDD
 if est_multi_sites:
     idx_defaut = (
         SITES_DISPONIBLES.index(site_defaut_user)
@@ -188,17 +198,18 @@ else:
     label_badges = "🏷️ Badges Temporaires"
 
 # =========================================================================
-# 7. DICTIONNAIRE NAVIGATION
+# 7. CONSTRUCTION DYNAMIQUE DU MENU DE NAVIGATION SELON LE RÔLE
 # =========================================================================
 menu_options = {
     "📝 Main Courante": "main_courante",
 }
 
-# Habilitations autorisées à consulter les registres historiques
-HAUTE_HABILITATION = ["HABI_ORBIS", "CHARGE_SURETE", "ADMIN", "COS"]
+# Consultation du registre historique (Haute habilitation)
+HAUTE_HABILITATION = ["HABI_ORBIS", "CHARGE_SURETE", "ADMIN", "COS", "SUPER_ADMIN"]
 if role_actif in HAUTE_HABILITATION:
     menu_options["📖 Consulter Registre"] = "registre"
 
+# Modules opérationnels communs à tous les agents (y compris AGENT_SECU)
 menu_options.update({
     "✍️ Visiteur Imprévu": "visiteur_imprevu",
     "👥 Visiteurs Attendus": "visiteurs_attendus",
@@ -206,17 +217,23 @@ menu_options.update({
     "⚠️ Anomalies & Vigilance": "anomalies",
     label_badges: "badges",
     "🚗 Gestion des Permis": "permis",
-    "⚙️ Consignes (Admin)": "consignes_admin",
-    "🛡️ Hypervision COS": "hypervision",
-    "🔍 Recherche Prestataires": "recherche_prestataires",
 })
+
+# Modules réservés exclusivement à l'Administration et la Supervision
+ROLES_ADMIN_ONLY = ["ADMIN", "SUPER_ADMIN", "CHARGE_SURETE", "COS"]
+if role_actif in ROLES_ADMIN_ONLY:
+    menu_options["⚙️ Consignes (Admin)"] = "consignes_admin"
+    menu_options["🛡️ Hypervision COS"] = "hypervision"
+
+# Recherche prestataires pour tous
+menu_options["🔍 Recherche Prestataires"] = "recherche_prestataires"
 
 selection_label = st.sidebar.radio("Navigation", list(menu_options.keys()))
 module_actif = menu_options[selection_label]
 
 st.sidebar.markdown("---")
 
-# 🚨 BOUTON DE DÉCONNEXION AVEC CLÔTURE AUTOMATIQUE
+# BOUTON DE DÉCONNEXION AVEC CLÔTURE AUTOMATIQUE
 if st.sidebar.button(
     "🚪 Déconnecter & Clôturer Main Courante",
     type="primary",
