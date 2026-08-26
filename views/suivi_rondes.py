@@ -148,7 +148,7 @@ def calculer_statut_creneau(
     # 🎯 GESTION DU PASSAGE À MINUIT (00h00 -> 05h00)
     # Si le créneau visé est en début de journée (0h-5h),
     # et que l'heure actuelle dépasse 05h00 du matin, ce créneau appartient à la nuit suivante (J+1).
-    if h_target < 05 and now_datetime.hour >= 05:
+    if h_target <= 05 and now_datetime.hour >= 05:
         dt_cible += datetime.timedelta(days=1)
 
     # Fenêtre de tolérance +/- 10 minutes
