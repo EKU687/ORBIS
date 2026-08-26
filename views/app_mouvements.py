@@ -22,45 +22,46 @@ def get_now_nc() -> datetime.datetime:
     return datetime.datetime.now(TZ_NC)
 
 
-# ✉️ IMPORT DIRECT DE LA FONCTION DANS utils/email_sender.py
 try:
     from utils.email_sender import envoyer_notification_passage_poste_securite
 
     HAS_EMAIL_SENDER = True
-except Exception as e:
+except Exception:
     HAS_EMAIL_SENDER = False
 
-# Style CSS pour les cartes de comptage
-st.markdown(
-    """
-    <style>
-    .metric-box-arrivals {
-        background-color: #e8f4f8;
-        border-radius: 10px;
-        padding: 15px;
-        border-left: 6px solid #0288d1;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        text-align: center;
-    }
-    .metric-box-departures {
-        background-color: #fde8e8;
-        border-radius: 10px;
-        padding: 15px;
-        border-left: 6px solid #d32f2f;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        text-align: center;
-    }
-    .metric-number {
-        font-size: 32px;
-        font-weight: bold;
-        margin: 5px 0;
-    }
-    .metric-arrivals-number { color: #0288d1; }
-    .metric-departures-number { color: #d32f2f; }
-    </style>
-""",
-    unsafe_allow_html=True,
-)
+
+def injecter_style_css():
+    """Injecte le style CSS pour garantir le contour des cartes métriques."""
+    st.markdown(
+        """
+        <style>
+        .metric-box-arrivals {
+            background-color: #e8f4f8 !important;
+            border-radius: 10px !important;
+            padding: 15px !important;
+            border-left: 6px solid #0288d1 !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+            text-align: center !important;
+        }
+        .metric-box-departures {
+            background-color: #fde8e8 !important;
+            border-radius: 10px !important;
+            padding: 15px !important;
+            border-left: 6px solid #d32f2f !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+            text-align: center !important;
+        }
+        .metric-number {
+            font-size: 32px !important;
+            font-weight: bold !important;
+            margin: 5px 0 !important;
+        }
+        .metric-arrivals-number { color: #0288d1 !important; }
+        .metric-departures-number { color: #d32f2f !important; }
+        </style>
+    """,
+        unsafe_allow_html=True,
+    )
 
 
 def notifier_surete_passage(
@@ -72,7 +73,6 @@ def notifier_surete_passage(
     num_piece: str,
     agent_garde: str,
 ):
-    """Envoie une alerte email au Chargé de Sûreté via utils.email_sender."""
     if not HAS_EMAIL_SENDER:
         return
 
@@ -91,7 +91,6 @@ def notifier_surete_passage(
 
 
 def fetch_sites_from_bdd() -> dict[str, dict]:
-    """Récupère tous les sites depuis Supabase avec leur UUID et code_site."""
     sites_map = {}
     try:
         res = (
@@ -121,10 +120,6 @@ def fetch_sites_from_bdd() -> dict[str, dict]:
 def fetch_mouvements_jour(
     site_code: str, site_uuid: str, date_cible: datetime.date
 ):
-    """Interroge Agents_Publics et Prestataires pour récupérer :
-    - Les ARRIVÉES EN ATTENTE (Statuts: IMPRIME, A_LIVRER, EN_COURS_NEDAP)
-    - Les DÉPARTS PRÉVUS (Statuts: ACTIF, A_LIVRER, IMPRIME)
-    """
     date_str = date_cible.isoformat()
     arrivants = []
     departs = []
@@ -152,7 +147,6 @@ def fetch_mouvements_jour(
                 if d.get("code_direction"):
                     directions_du_site.add(d["code_direction"].upper())
 
-        # Agents Publics
         res_agents = (
             supabase.table("Agents_Publics")
             .select("*")
@@ -210,7 +204,6 @@ def fetch_mouvements_jour(
     except Exception as e:
         st.warning(f"Note (Agents_Publics) : {e}")
 
-    # Prestataires
     try:
         res_prest = (
             supabase.table("Prestataires")
@@ -271,6 +264,8 @@ def fetch_mouvements_jour(
 def render_mouvements_console(
     site_actuel: str, site_uuid: str, date_cible: datetime.date, site_cle: str
 ):
+    injecter_style_css()
+
     now_str = get_now_nc().strftime("%H:%M:%S")
     st.info(
         f"🕒 **Console Active** | Auto-synchro BDD : {now_str} | Site :"
@@ -322,7 +317,6 @@ def render_mouvements_console(
     tab_arrivants, tab_departs = st.tabs([label_tab_arr, label_tab_dep])
     agent_connecte = f"Agent PC ({site_actuel})"
 
-    # --- TAB 1 : ARRIVÉES ---
     with tab_arrivants:
         st.subheader(
             f"📋 Nouveaux Arrivants du {date_cible.strftime('%d/%m/%Y')} sur"
@@ -506,7 +500,6 @@ def render_mouvements_console(
                 f" du {date_cible.strftime('%d/%m/%Y')}."
             )
 
-    # --- TAB 2 : DÉPARTS ---
     with tab_departs:
         st.subheader(
             "🚪 Fin d'Accès & Restitution de Badges du"
@@ -553,15 +546,15 @@ def render_mouvements_console(
 
 
 def show():
-    """Point d'entrée principal pour le module Mouvements (Vues intégrées et Onglet dédié)."""
+    """Point d'entrée principal pour le module Mouvements."""
+    injecter_style_css()
+
     st.title("🛡️ IDENTIS — Gestion des Mouvements Sécurité")
     st.caption("Console d'affichage permanent du Poste de Garde (Arrivées & Départs).")
 
-    # 1. CHARGEMENT BDD SITES
     sites_dict = fetch_sites_from_bdd()
     codes_valides = list(sites_dict.keys())
 
-    # 2. DÉTECTION DU SITE (query_params URL ou Session State ORBIS)
     query_params = st.query_params
     site_param = query_params.get("site", None)
 
@@ -608,7 +601,6 @@ def show():
         if st.button("🔄 Rafraîchir", use_container_width=True):
             st.rerun()
 
-    # APPEL DU FRAGMENT AUTO-RAFRAÎCHI
     render_mouvements_console(
         site_actuel, site_uuid, date_selectionnee, site_cle
     )
