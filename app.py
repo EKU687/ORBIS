@@ -231,6 +231,17 @@ menu_options["🔍 Recherche Prestataires"] = "recherche_prestataires"
 selection_label = st.sidebar.radio("Navigation", list(menu_options.keys()))
 module_actif = menu_options[selection_label]
 
+# =========================================================================
+# 7.1. ACCÈS DIRECT AU MONITEUR DES MOUVEMENTS (DEUXIÈME ONGLET / ÉCRAN)
+# =========================================================================
+st.sidebar.markdown("---")
+st.sidebar.link_button(
+    "🚪 Moniteur Mouvements (Onglet Dédié)",
+    url=f"?site={site_selected}&view=mouvements",
+    use_container_width=True,
+    help="Ouvre la console des flux d'entrées/sorties en continu dans un nouvel onglet.",
+)
+
 st.sidebar.markdown("---")
 
 # BOUTON DE DÉCONNEXION AVEC CLÔTURE AUTOMATIQUE
@@ -244,7 +255,16 @@ if st.sidebar.button(
 # =========================================================================
 # 8. ROUTAGE DES MODULES MÉTIER
 # =========================================================================
-if module_actif == "main_courante":
+query_params = st.query_params
+view_param = query_params.get("view", None)
+
+# Interception prioritaire du paramètre d'URL direct ?view=mouvements
+if view_param == "mouvements":
+    from views import app_mouvements
+
+    app_mouvements.show()
+
+elif module_actif == "main_courante":
     from views import main_courante
 
     main_courante.show()
