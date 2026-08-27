@@ -3,9 +3,12 @@ from pathlib import Path
 import sys
 import zoneinfo
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 # Fuseau horaire Nouvelle-Calédonie (UTC+11)
 TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
+# Envoie un ping au serveur toutes les 3 minutes (180 000 ms) pour maintenir la session ouverte 24h/24
+st_autorefresh(interval=180 * 1000, key="keep_alive_main_courante")
 
 
 def get_now_nc() -> datetime.datetime:
