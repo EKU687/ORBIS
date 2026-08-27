@@ -5,4 +5,5 @@ bcrypt>=4.0.0
 reportlab>=4.0.0
 python-dotenv>=1.0.0
 holidays>=0.40
+streamlit-autorefresh>=1.0.1
 git+https://github.com/eku687/cadre-entreprise.git@23d7550
