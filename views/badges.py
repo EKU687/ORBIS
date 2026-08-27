@@ -1,6 +1,7 @@
 import datetime
 from pathlib import Path
 import sys
+import zoneinfo
 import pandas as pd
 import streamlit as st
 
@@ -10,13 +11,24 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.db_client import supabase
 
+# Définition du fuseau horaire local (Nouvelle-Calédonie / UTC+11)
+TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
+
+
+def get_now_nc_iso() -> str:
+    """Retourne l'horodatage exact en Nouvelle-Calédonie au format ISO."""
+    return datetime.datetime.now(TZ_NC).isoformat()
+
 
 def format_date_fr(date_str: str) -> str:
+    """Convertit toute date ISO enregistrée vers l'heure locale de Nouvelle-Calédonie."""
     if not date_str:
         return "Non renseignée"
     try:
         dt = datetime.datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-        return dt.strftime("%d/%m/%Y à %H:%M")
+        # Si la date a une zone d'origine, conversion vers UTC+11
+        dt_local = dt.astimezone(TZ_NC)
+        return dt_local.strftime("%d/%m/%Y à %H:%M")
     except Exception:
         return str(date_str)
 
@@ -231,7 +243,7 @@ def show():
                             "societe_organisme": societe if societe else "GNC",
                             "type_beneficiaire": type_b,
                             "remis_par": agent_connecte,
-                            "remis_at": datetime.datetime.now().isoformat(),
+                            "remis_at": get_now_nc_iso(),  # 📍 Heure locale Nouméa
                             "statut": "EN_COURS",
                             "observations": obs,
                         }
@@ -275,7 +287,7 @@ def show():
                             use_container_width=True,
                             type="primary",
                         ):
-                            now = datetime.datetime.now().isoformat()
+                            now = get_now_nc_iso()  # 📍 Heure locale Nouméa
                             try:
                                 supabase.table("badges_temporaires").update({
                                     "statut": "RESTITUE",
