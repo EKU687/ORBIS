@@ -219,7 +219,7 @@ badge_env = "🟢 PROD" if APP_ENV == "PRODUCTION" else "🟠 BÊTA"
 st.sidebar.caption(
     f"🛡️ **{APP_SUBTITLE}**\n\n"
     f"📌 Version : `{APP_VERSION}` | {badge_env}\n\n"
-    f"📅 Mis à jour le : {APP_DATE}"
+    f"📅 Mis à jour le : {APP_DATE}\n\n"
     f"👨‍💻 Auteur : **{APP_AUTHOR}**"
 )
 st.sidebar.markdown("---")
