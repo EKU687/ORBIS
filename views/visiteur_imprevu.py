@@ -1,6 +1,11 @@
-import sys
-from pathlib import Path
+# =========================================================================
+# MODULE : ENREGISTREMENT VISITEUR IMPRÉVU (views/visiteur_imprevu.py)
+# Inclus : Demandes spontanées, validation de l'hôte référent,
+#          et Mode Livraison Quai / Sans Badge physique.
+# =========================================================================
 import datetime
+from pathlib import Path
+import sys
 import uuid
 import zoneinfo
 import streamlit as st
@@ -123,26 +128,29 @@ def show():
         info["badge"] for info in st.session_state["visiteurs_presents"].values()
     ]
     tous_badges = [f"V.{i:03d}" for i in range(1, 31)]
-    badges_disponibles = ["Sélectionner un badge..."] + [
-        b for b in tous_badges if b not in badges_occupes
-    ]
+
+    # 🎯 INTÉGRATION NATIVE DU MODE LIVRAISON SANS BADGE
+    badges_disponibles = (
+        ["Sélectionner un badge...", "📦 LIVRAISON (Sans badge)"]
+        + [b for b in tous_badges if b not in badges_occupes]
+    )
 
     # Charger la liste dynamique des hôtes référents depuis la BDD
     liste_hotes = fetch_hotes_referents_list()
 
     with st.form("form_visiteur_imprevu", clear_on_submit=True):
         col_nom, col_org, col_hote = st.columns([1.5, 1.5, 2])
-        
+
         with col_nom:
             nom_visiteur = st.text_input(
-                "Nom & Prénom du visiteur *", placeholder="Ex: DUPONT Jean"
+                "Nom & Prénom du visiteur / livreur *", placeholder="Ex: DUPONT Jean ou DHL"
             )
-        
+
         with col_org:
             organisme = st.text_input(
-                "Société / Organisme", placeholder="Ex: OPT, Privé, etc."
+                "Société / Organisme", placeholder="Ex: OPT, Chronopost, Privé, etc."
             )
-        
+
         with col_hote:
             agent_referent_sel = st.selectbox(
                 "Agent référent / Hôte demandé *",
@@ -152,12 +160,12 @@ def show():
 
         st.markdown("---")
         col_badge, col_dec = st.columns([2, 2])
-        
+
         with col_badge:
             badge_sel = st.selectbox(
                 "Badge Visiteur attribué (si accepté) :", badges_disponibles
             )
-        
+
         with col_dec:
             accord_hote = st.radio(
                 "Accord de l'agent référent :",
@@ -184,7 +192,7 @@ def show():
             )
         elif accord_hote == "✅ ACCEPTÉ" and badge_sel == "Sélectionner un badge...":
             st.error(
-                "⚠️ Un badge doit être sélectionné pour un visiteur autorisé sur site."
+                "⚠️ Un badge physique ou le mode '📦 LIVRAISON (Sans badge)' doit être sélectionné."
             )
         else:
             now_nc = get_now_nc()
@@ -218,41 +226,51 @@ def show():
                     st.error(f"Erreur enregistrement MC : {e}")
 
             elif accord_hote == "✅ ACCEPTÉ":
+                est_livraison = (badge_sel == "📦 LIVRAISON (Sans badge)")
+                badge_final = "LIVRAISON" if est_livraison else badge_sel
+                ref_prefix = "REF-VIS-IMP-LIV-IN" if est_livraison else "REF-VIS-IMP-IN"
+
                 st.session_state["visiteurs_presents"][key_visiteur] = {
-                    "badge": badge_sel,
+                    "badge": badge_final,
                     "nom": nom_visiteur.upper(),
                     "hote": agent_referent,
-                    "type": "IMPREVU",
+                    "type": "LIVRAISON" if est_livraison else "IMPREVU",
                 }
                 st.session_state["visiteurs_imprevus_enregistres"].append({
                     "key": key_visiteur,
                     "nom": nom_visiteur.upper(),
                     "organisme": organisme or "N/A",
                     "hote": agent_referent,
-                    "badge": badge_sel,
+                    "badge": badge_final,
                     "heure_arrivee": now_nc.strftime("%H:%M"),
                 })
 
+                desc_log = (
+                    f"📦 Livraison Imprévue / Quai : {nom_visiteur.upper()} ({organisme or 'Transporteur'}) pour {agent_referent} (Badge LIVRAISON)."
+                    if est_livraison
+                    else f"Arrivée visiteur imprévu : {nom_visiteur.upper()} ({organisme or 'N/A'}) - Badge {badge_sel}. Visite autorisée par {agent_referent}."
+                )
+
+                action_log = (
+                    "Accès quai de déchargement autorisé sans badge physique."
+                    if est_livraison
+                    else "Accord obtenu, badge remis et entrée autorisée."
+                )
+
                 payload_mc = {
-                    "reference": f"REF-VIS-IMP-IN-{ref_time}",
+                    "reference": f"{ref_prefix}-{ref_time}",
                     "vacation_id": vac_id,
                     "site_id": site_actuel,
                     "agent_nom": agent_connecte,
                     "horodatage": now_iso,
                     "type_evenement": "VISITEUR",
-                    "description": (
-                        f"Arrivée visiteur imprévu : {nom_visiteur.upper()}"
-                        f" ({organisme or 'N/A'}) - Badge {badge_sel}. Visite autorisée par"
-                        f" {agent_referent}."
-                    ),
-                    "actions_menees": (
-                        "Accord obtenu, badge remis et entrée autorisée."
-                    ),
+                    "description": desc_log,
+                    "actions_menees": action_log,
                 }
                 try:
                     supabase.table("mc_evenements").insert(payload_mc).execute()
                     st.toast(
-                        f"Entrée de {nom_visiteur} enregistrée avec le Badge {badge_sel} !",
+                        f"Mouvement enregistrée pour {nom_visiteur} (Mode: {badge_final}) !",
                         icon="✅",
                     )
                 except Exception as e:

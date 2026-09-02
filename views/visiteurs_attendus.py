@@ -1,3 +1,8 @@
+# =========================================================================
+# MODULE : SUIVI GÉNÉRAL ET VISITEURS ATTENDUS (views/visiteurs_attendus.py)
+# Inclus : Synchronisation BDD, Gestion des imprévus, Planning ASAP,
+#          et Mode Livraison Quai / Sans Badge physique.
+# =========================================================================
 import datetime
 import io
 from pathlib import Path
@@ -115,6 +120,8 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
                 badge = "Aucun"
                 if "(Badge V." in desc:
                     badge = desc.split("(Badge ")[1].split(")")[0]
+                elif "(Badge LIVRAISON)" in desc:
+                    badge = "LIVRAISON"
 
                 nom_key = (
                     desc.split(":")[1].split("(")[0].strip().upper()
@@ -144,7 +151,7 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
                         badges_occupes.remove(badge_lib)
                 sortis_set.add(nom_key)
 
-            # 🎯 Détection absence / annulation
+            # Détection absence / annulation
             elif "-ABS-" in ref:
                 nom_key = (
                     desc.split(":")[1].split("(")[0].strip().upper()
@@ -210,9 +217,12 @@ def show():
     )
 
     tous_badges = [f"V.{i:03d}" for i in range(1, 31)]
-    badges_disponibles = ["Sélectionner un badge..."] + [
-        b for b in tous_badges if b not in badges_occupes
-    ]
+    
+    # 🎯 INTÉGRATION DU MODE LIVRAISON DANS LA LISTE DÉROULANTE
+    badges_disponibles = (
+        ["Sélectionner un badge...", "📦 LIVRAISON (Sans badge)"] 
+        + [b for b in tous_badges if b not in badges_occupes]
+    )
 
     vac_id = get_or_create_vacation_id(site_actuel, agent_connecte)
 
@@ -304,7 +314,7 @@ def show():
         else:
             df_target_date = df_filtered.copy()
 
-        # 🎯 Filtrer ceux déjà sortis ET ceux déclarés non présentés / annulés
+        # Filtrer ceux déjà sortis ET ceux déclarés non présentés / annulés
         if not df_target_date.empty:
             df_target_date["nom_clean"] = df_target_date["nom"].astype(str).str.strip().str.upper()
             df_target_date = df_target_date[
@@ -354,7 +364,12 @@ def show():
 
                         if est_present:
                             badge_attribue = presents_bdd[nom_visiteur]["badge"]
-                            st.info(f"Badge affecté : **{badge_attribue}**")
+                            
+                            # Affichage distinct de l'étiquette selon le type
+                            if badge_attribue == "LIVRAISON":
+                                st.warning("📦 **Livraison en cours (Quai)**")
+                            else:
+                                st.info(f"Badge affecté : **{badge_attribue}**")
 
                             if st.button(
                                 "🚪 Signaler Sortie",
@@ -362,6 +377,11 @@ def show():
                                 use_container_width=True,
                                 type="secondary",
                             ):
+                                desc_sortie = (
+                                    f"Départ Livraison / Camion : {nom_visiteur} (Quai déchargement libéré)."
+                                    if badge_attribue == "LIVRAISON"
+                                    else f"Sortie visiteur attendu : {nom_visiteur} (Badge {badge_attribue} restitué). Visite de {organisateur}."
+                                )
                                 payload_mc_sortie = {
                                     "reference": f"REF-VIS-OUT-{ref_time}",
                                     "vacation_id": vac_id,
@@ -369,14 +389,9 @@ def show():
                                     "agent_nom": agent_connecte,
                                     "horodatage": now_nc.isoformat(),
                                     "type_evenement": "VISITEUR",
-                                    "description": (
-                                        f"Sortie visiteur attendu :"
-                                        f" {nom_visiteur} (Badge"
-                                        f" {badge_attribue} restitué). Visite"
-                                        f" de {organisateur}."
-                                    ),
+                                    "description": desc_sortie,
                                     "actions_menees": (
-                                        "Départ consigné et badge réintégré."
+                                        "Fin de présence consignée en Main Courante."
                                     ),
                                 }
                                 try:
@@ -384,7 +399,7 @@ def show():
                                         payload_mc_sortie
                                     ).execute()
                                     st.toast(
-                                        f"Sortie de {nom_visiteur} enregistrée !",
+                                        f"Départ de {nom_visiteur} enregistré !",
                                         icon="🚪",
                                     )
                                     st.rerun()
@@ -397,6 +412,8 @@ def show():
                                 badges_disponibles,
                                 key=f"sel_bdg_{idx}",
                             )
+                            
+                            # 🎯 VALIDATION DU BOUTON ARRIVÉE (Si badge physique OU si mode Livraison)
                             badge_valide = (
                                 badge_sel != "Sélectionner un badge..."
                             )
@@ -411,22 +428,28 @@ def show():
                                     type="primary",
                                     disabled=not badge_valide,
                                 ):
+                                    est_livraison = (badge_sel == "📦 LIVRAISON (Sans badge)")
+                                    valeur_badge = "LIVRAISON" if est_livraison else badge_sel
+                                    ref_entree = "REF-VIS-LIV-IN" if est_livraison else "REF-VIS-IN"
+                                    
+                                    desc_entree = (
+                                        f"Arrivée Livraison / Quai : {nom_visiteur} (Société / Livreurs) pour {organisateur} (Badge LIVRAISON)."
+                                        if est_livraison
+                                        else f"Arrivée visiteur attendu : {nom_visiteur} (Badge {badge_sel}) pour {organisateur} ({email_visiteur})."
+                                    )
+
                                     payload_mc = {
-                                        "reference": f"REF-VIS-IN-{ref_time}",
+                                        "reference": f"{ref_entree}-{ref_time}",
                                         "vacation_id": vac_id,
                                         "site_id": site_actuel,
                                         "agent_nom": agent_connecte,
                                         "horodatage": now_nc.isoformat(),
                                         "type_evenement": "VISITEUR",
-                                        "description": (
-                                            "Arrivée visiteur attendu :"
-                                            f" {nom_visiteur} (Badge"
-                                            f" {badge_sel}) pour"
-                                            f" {organisateur}"
-                                            f" ({email_visiteur})."
-                                        ),
+                                        "description": desc_entree,
                                         "actions_menees": (
-                                            "Accueil effectué et badge remis."
+                                            "Accès quai enregistré (Livraison)."
+                                            if est_livraison
+                                            else "Accueil effectué et badge remis."
                                         ),
                                     }
                                     try:
@@ -434,8 +457,7 @@ def show():
                                             payload_mc
                                         ).execute()
                                         st.toast(
-                                            f"Arrivée de {nom_visiteur}"
-                                            " enregistrée !",
+                                            f"Arrivée de {nom_visiteur} enregistrée !",
                                             icon="✅",
                                         )
                                         st.rerun()
