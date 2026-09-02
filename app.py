@@ -13,6 +13,7 @@ import cadre_entreprise.ui as ui
 import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+from config import APP_AUTHOR, APP_DATE, APP_ENV, APP_NAME, APP_VERSION
 
 # --- CONFIGURATION DU FUSEAU HORAIRE NOUVELLE-CALÉDONIE (UTC+11) ---
 TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
@@ -318,6 +319,19 @@ if st.sidebar.button(
     help="Réservé aux fins de poste : clôture la vacation sur le registre Supabase.",
 ):
     executer_cloture_vacation_explicite()
+    
+# =========================================================================
+# PIED DE PAGE SIDEBAR : REGISTRE DE VERSION & ENVIRONNEMENT (SemVer)
+# =========================================================================
+st.sidebar.markdown("---")
+
+badge_env = "🟢 PROD" if APP_ENV == "PRODUCTION" else "🟠 BÊTA"
+
+st.sidebar.caption(
+    f"🛡️ **{APP_NAME}**\n\n"
+    f"📌 Version : `{APP_VERSION}` | {badge_env}\n\n"
+    f"📅 Mis à jour le : {APP_DATE} | 📍 NC (UTC+11)"
+)
 
 # =========================================================================
 # 8. ROUTAGE DES MODULES MÉTIER
