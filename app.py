@@ -208,10 +208,15 @@ def executer_cloture_vacation_explicite():
 
 
 # =========================================================================
-# 5. SIDEBAR : EN-TÊTE, FICHE AGENT & SÉLECTEUR DE SITE DYNAMIQUE
+# 5. SIDEBAR : EN-TÊTE DYNAMIQUE AVEC VERSIONNING (SemVer)
 # =========================================================================
 st.sidebar.markdown("## 🌐 **ORBIS**")
-st.sidebar.caption("Main Courante V3")
+
+# Badge d'environnement visuel (PROD ou BÊTA)
+badge_env = "🟢 PROD" if APP_ENV == "PRODUCTION" else "🟠 BÊTA"
+
+# Sous-titre dynamique combinant le nom du module, la version et le statut
+st.sidebar.caption(f"Main Courante — **v{APP_VERSION}** {badge_env}")
 st.sidebar.markdown("---")
 
 st.sidebar.markdown(f"👤 **{user.get('full_name', 'AGENT')}**")
@@ -319,19 +324,6 @@ if st.sidebar.button(
     help="Réservé aux fins de poste : clôture la vacation sur le registre Supabase.",
 ):
     executer_cloture_vacation_explicite()
-    
-# =========================================================================
-# PIED DE PAGE SIDEBAR : REGISTRE DE VERSION & ENVIRONNEMENT (SemVer)
-# =========================================================================
-st.sidebar.markdown("---")
-
-badge_env = "🟢 PROD" if APP_ENV == "PRODUCTION" else "🟠 BÊTA"
-
-st.sidebar.caption(
-    f"🛡️ **{APP_NAME}**\n\n"
-    f"📌 Version : `{APP_VERSION}` | {badge_env}\n\n"
-    f"📅 Mis à jour le : {APP_DATE} | 📍 NC (UTC+11)"
-)
 
 # =========================================================================
 # 8. ROUTAGE DES MODULES MÉTIER
