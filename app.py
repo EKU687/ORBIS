@@ -216,7 +216,11 @@ st.sidebar.markdown("## 🌐 **ORBIS**")
 badge_env = "🟢 PROD" if APP_ENV == "PRODUCTION" else "🟠 BÊTA"
 
 # Sous-titre dynamique combinant le nom du module, la version et le statut
-st.sidebar.caption(f"Main Courante — **v{APP_VERSION}** {badge_env}")
+st.sidebar.caption(
+    f"🛡️ **{APP_NAME}**\n\n"
+    f"📌 Version : `{APP_VERSION}` | {badge_env}\n\n"
+    f"📅 Mis à jour le : {APP_DATE} | 📍 NC (UTC+11)"
+)
 st.sidebar.markdown("---")
 
 st.sidebar.markdown(f"👤 **{user.get('full_name', 'AGENT')}**")
