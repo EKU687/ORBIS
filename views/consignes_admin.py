@@ -1,7 +1,7 @@
 # =========================================================================
 # MODULE : ADMINISTRATION DES CONSIGNES (views/consignes_admin.py)
-# Inclus : Publication globale ou ciblée par agent, gestion des priorités,
-#          dates de validité et archivage BDD Supabase.
+# Inclus : Publication globale ou ciblée (AGENT_SECU, HABI_ORBIS, eric.kuter,
+#          estelle.michaux), gestion des priorités et archivage BDD.
 # =========================================================================
 import datetime
 from pathlib import Path
@@ -33,17 +33,36 @@ def generate_id(prefix: str) -> str:
 
 @st.cache_data(ttl=300)
 def fetch_liste_utilisateurs() -> list[dict]:
-    """Récupère la liste des agents/utilisateurs enregistrés dans Supabase pour le ciblage."""
+    """
+    🎯 Récupère uniquement les agents/utilisateurs éligibles :
+       - Rôles : AGENT_SECU, HABI_ORBIS
+       - Logins spécifiques : eric.kuter, estelle.michaux
+    """
     try:
         res = (
             supabase.table("Utilisateur")
-            .select("login, nom")
+            .select("login, nom, role")
             .order("nom")
             .execute()
         )
-        return res.data or []
+        
+        raw_users = res.data or []
+        utilisateurs_filtres = []
+
+        logins_autorises = ["eric.kuter", "estelle.michaux"]
+        roles_autorises = ["AGENT_SECU", "HABI_ORBIS"]
+
+        for user in raw_users:
+            login = str(user.get("login") or "").strip().lower()
+            role = str(user.get("role") or "").strip().upper()
+
+            if role in roles_autorises or login in logins_autorises:
+                utilisateurs_filtres.append(user)
+
+        return utilisateurs_filtres
+
     except Exception as e:
-        print(f"⚠️ Erreur chargement liste Utilisateurs : {e}")
+        print(f"⚠️ Erreur chargement liste Utilisateurs ciblés : {e}")
         return []
 
 
@@ -101,7 +120,6 @@ def show(user_profile: dict | None = None):
                 prio = csg.get("priorite", "NORMALE")
                 badge = "🔴 URGENT" if prio == "URGENTE" else "🔵 CONSIGNE"
 
-                # Détermination du libellé de ciblage
                 destinataires = csg.get("destinataires") or ["TOUS"]
                 if "TOUS" in destinataires:
                     cible_txt = "📢 Tous les agents"
@@ -146,7 +164,7 @@ def show(user_profile: dict | None = None):
     aujourdhui_nc = get_now_nc().date()
     liste_utilisateurs = fetch_liste_utilisateurs()
 
-    # Formattage des options pour le multiselect (Nom + Login)
+    # Formattage des options pour le multiselect (Nom + Login + Rôle)
     options_agents = ["📢 TOUS LES AGENTS"] + [
         f"{u.get('nom', 'Agent')} ({u.get('login')})"
         for u in liste_utilisateurs
@@ -157,7 +175,7 @@ def show(user_profile: dict | None = None):
         titre = st.text_input(
             "Titre de la consigne *",
             placeholder=(
-                "Ex: Livraison d'équipement zone Nord, Consigne Poste Après-Midi..."
+                "Ex: Consigne Poste Après-Midi, Présence d'un prestataire sensible..."
             ),
         )
 
@@ -177,12 +195,12 @@ def show(user_profile: dict | None = None):
                 format="DD/MM/YYYY",
             )
 
-        # 🎯 SÉLECTEUR DE DESTINATAIRES (GLOBAL OU AGENT(S) SPÉCIFIQUE(S))
+        # 🎯 SÉLECTEUR CIBLÉ AVEC FILTRE STRICTE (AGENT_SECU, HABI_ORBIS, ERIC, ESTELLE)
         destinataires_selectionnes = st.multiselect(
             "🎯 Destinataire(s) de la consigne :",
             options=options_agents,
             default=["📢 TOUS LES AGENTS"],
-            help="Sélectionnez 'TOUS LES AGENTS' pour une consigne globale site, ou désélectionnez pour cibler des agents spécifiques.",
+            help="Sélectionnez 'TOUS LES AGENTS' pour une consigne globale, ou choisissez parmi les agents de sécurité et personnes habilitées.",
         )
 
         description = st.text_area(
@@ -211,11 +229,9 @@ def show(user_profile: dict | None = None):
                     "⚠️ Veuillez sélectionner au moins un destinataire (ou 'TOUS LES AGENTS')."
                 )
             else:
-                # Traitement et extraction des logins cibles
                 if "📢 TOUS LES AGENTS" in destinataires_selectionnes:
                     destinataires_final = ["TOUS"]
                 else:
-                    # Extraction du login situé entre parenthèses
                     destinataires_final = [
                         item.split("(")[-1].replace(")", "").strip().lower()
                         for item in destinataires_selectionnes
@@ -240,7 +256,7 @@ def show(user_profile: dict | None = None):
                     "priorite": priorite,
                     "statut": "ACTIVE",
                     "cree_par": agent_nom,
-                    "destinataires": destinataires_final,  # Enregistré dans Supabase
+                    "destinataires": destinataires_final,
                 }
 
                 try:
