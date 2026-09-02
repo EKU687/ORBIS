@@ -1,3 +1,8 @@
+# =========================================================================
+# MODULE : GESTION DES MOUVEMENTS SÉCURITÉ / IDENTIS (app_mouvement.py)
+# Inclus : Contrôle d'accès terrain, validation sûreté (Admin/Charge Surete),
+#          restitution de badges et notifications automatiques.
+# =========================================================================
 import datetime
 from pathlib import Path
 import sys
@@ -105,7 +110,7 @@ def fetch_sites_from_bdd() -> dict[str, dict]:
             for row in res.data:
                 nom = row.get("nom_site", "").strip()
                 code = row.get("code_site", "").strip()
-                
+
                 # Clé primaire d'affichage basée sur nom_site
                 key_name = nom if nom else code
                 if key_name:
@@ -327,7 +332,10 @@ def render_mouvements_console(
     label_tab_dep = f"📤 DÉPARTS / BADGES À RÉCUPÉRER ({nb_departs})"
 
     tab_arrivants, tab_departs = st.tabs([label_tab_arr, label_tab_dep])
-    agent_connecte = f"Agent PC ({site_actuel})"
+    
+    # Nom de l'agent connecté depuis le profil utilisateur
+    user_info = st.session_state.get("user_profile", {})
+    agent_connecte = user_info.get("full_name") or f"Agent PC ({site_actuel})"
 
     # --- TAB 1 : ARRIVÉES ---
     with tab_arrivants:
@@ -448,6 +456,7 @@ def render_mouvements_console(
                         " (Chargé de Sûreté / Admin)"
                     )
 
+                    # 🎯 ACCÈS AUTORISÉ POUR LES RÔLES ETAPE 2 (ADMIN, SUPER_ADMIN, CHARGE_SURETE, COS)
                     desactiver_p2 = (not est_admin) or surete_deja_enregistree
 
                     with st.container(border=True):
@@ -480,7 +489,7 @@ def render_mouvements_console(
                     if not est_admin:
                         st.caption(
                             "🔒 **Information Poste de Garde :** La check-list"
-                            " et l'émargement final sont réservés au Chargé de Sûreté."
+                            " et l'émargement final sont réservés au Chargé de Sûreté et Administrateurs."
                         )
                     else:
                         st.markdown("<br>", unsafe_allow_html=True)
@@ -579,7 +588,10 @@ def show():
     role_clean = str(raw_role).upper().strip()
 
     site_sollicite = None
-    est_admin_session = role_clean in ["ADMIN", "SUPER_ADMIN", "CHARGE_SURETE"]
+    
+    # 🎯 LISTE COMPLETE DES ROLES AUTORISÉS POUR L'ÉTAPE 2 (ÉMARGEMENT SÛRETÉ)
+    ROLES_AUTORISES_ETAPE2 = ["ADMIN", "SUPER_ADMIN", "CHARGE_SURETE", "COS"]
+    est_admin_session = role_clean in ROLES_AUTORISES_ETAPE2
     site_cle_admin = False
 
     # A. Détection depuis l'URL (?site=SITE%20DOUMER ou ?site=ADMIN)
@@ -588,11 +600,9 @@ def show():
         if val_url in ["ADMIN", "SUPER_ADMIN"]:
             site_cle_admin = True
         else:
-            # Match direct par nom_site (ex: "SITE DOUMER")
             if val_url in sites_dict:
                 site_sollicite = val_url
             else:
-                # Match tolérant par code (ex: "DOUMER")
                 for nom_k, data_v in sites_dict.items():
                     if data_v["code_site"].upper() == val_url:
                         site_sollicite = nom_k
@@ -638,7 +648,7 @@ def show():
         if st.button("🔄 Rafraîchir", use_container_width=True):
             st.rerun()
 
-    # Rendu final de la console
+    # Rendu final de la console avec le statut admin réévalué
     render_mouvements_console(
         site_actuel, site_uuid, date_selectionnee, est_admin=(site_cle_admin or est_admin_session)
     )
