@@ -1,7 +1,7 @@
 # =========================================================================
 # MODULE : CONSULTATION RÉFÉRENTIEL PRESTATAIRES (views/recherche_prestataires.py)
-# Inclus : Interrogation Supabase, conversion des UUIDs de sites,
-#          affichage du statut terrain et intégration de la Société.
+# Inclus : Interrogation Supabase, conversion des UUIDs (Sites & Sociétés),
+#          affichage du statut terrain et intégration dynamique de la Société.
 # =========================================================================
 import datetime
 from pathlib import Path
@@ -40,6 +40,18 @@ def get_sites_dict() -> dict:
     return {}
 
 
+@st.cache_data(ttl=300)
+def get_societes_dict() -> dict:
+    """🎯 Récupère la correspondance UUID (id) -> nom_societe depuis la table 'Societes'."""
+    try:
+        res = supabase.table("Societes").select("id, nom_societe").execute()
+        if res.data:
+            return {item["id"]: item["nom_societe"] for item in res.data}
+    except Exception as e:
+        print(f"⚠️ Erreur chargement table Societes : {e}")
+    return {}
+
+
 def resolve_sites_names(sites_raw, sites_map: dict) -> str:
     """Convertit un ou plusieurs UUIDs de sites en leurs noms lisibles."""
     if not sites_raw:
@@ -63,7 +75,10 @@ def show():
 
     site_actuel = st.session_state.get("site_actif", "DINUM")
     today = datetime.date.today()
+    
+    # Chargement des tables de correspondance (Cache 5 min)
     sites_map = get_sites_dict()
+    societes_map = get_societes_dict()
 
     # --- 1. BARRE DE RECHERCHE ET FILTRES ---
     col_search, col_statut, col_badge = st.columns([2, 1, 1])
@@ -164,11 +179,12 @@ def show():
                     badge_type = p.get("type_badge") or "Non défini"
                     ref_id = p.get("id_ident") or "N/A"
 
-                    # 🎯 Récupération souple de la Société / Entreprise
-                    societe = (
-                        p.get("societe")
+                    # 🎯 Résolution de l'id_societe vers le nom_societe
+                    id_soc = p.get("id_societe")
+                    nom_societe = (
+                        societes_map.get(id_soc)
+                        or p.get("societe")
                         or p.get("organisme")
-                        or p.get("entreprise")
                         or "Non renseignée"
                     )
 
@@ -180,10 +196,10 @@ def show():
                     )
                     sites_display = resolve_sites_names(sites_raw, sites_map)
 
-                    # 🎯 1. Entête enrichie avec le nom de la société
+                    # Entête enrichie avec le nom de la société résolu
                     title_expander = (
                         f"{p['computed_badge']} — **{p['nom'].upper()}"
-                        f" {p['prenom']}** (*{societe}*) (ID: `{ref_id}`)"
+                        f" {p['prenom']}** (*{nom_societe}*) (ID: `{ref_id}`)"
                     )
 
                     with st.expander(title_expander, expanded=False):
@@ -191,10 +207,9 @@ def show():
 
                         with c1:
                             st.write(f"**Identifiant IDENTIS :** `{ref_id}`")
-                            # 🎯 2. Ajout de la ligne Société dans la 1ère colonne
                             st.write(
                                 "🏢 **Société / Entreprise :**"
-                                f" **{societe}**"
+                                f" **{nom_societe}**"
                             )
                             st.write(
                                 "**Téléphone :**"
