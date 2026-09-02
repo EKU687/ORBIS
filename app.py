@@ -1,13 +1,23 @@
+# =========================================================================
+# APPLICATION : MAIN COURANTE V3 - PC GARDE (ORBIS)
+# Inclus : Gestion SSO Portail HUB, Support YubiKey/Password via SDK,
+#          Moniteur Mouvements direct, Horodatage Pacific/Noumea (UTC+11),
+#          Clôture automatique de vacation et routage dynamique par rôles.
+# =========================================================================
 import datetime
 from pathlib import Path
 import sys
 import zoneinfo
+import cadre_entreprise.auth as auth
+import cadre_entreprise.ui as ui
+import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-# Fuseau horaire Nouvelle-Calédonie (UTC+11)
+# --- CONFIGURATION DU FUSEAU HORAIRE NOUVELLE-CALÉDONIE (UTC+11) ---
 TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
-# Envoie un ping au serveur toutes les 3 minutes (180 000 ms) pour maintenir la session ouverte 24h/24
+
+# Ping automatique toutes les 3 minutes (180 000 ms) pour maintenir la session
 st_autorefresh(interval=180 * 1000, key="keep_alive_main_courante")
 
 
@@ -16,24 +26,23 @@ def get_now_nc() -> datetime.datetime:
     return datetime.datetime.now(TZ_NC)
 
 
-# --- FIX DES CHEMINS PYTHON ---
+# --- FIX DES CHEMINS PYTHON ET IMPORTS SOCLE ---
 ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
 from utils.db_client import supabase
-from views import login
 
-# --- CONFIGURATION DE LA PAGE ---
+# --- CONFIGURATION DE LA PAGE STREAMLIT ---
 st.set_page_config(
     page_title="ORBIS - Main Courante V3",
-    page_icon="🌐",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # =========================================================================
-# 🎯 ACCÈS DIRECT MONITEUR MOUVEMENTS (AVANT VERROU AUTHENTIFICATION)
+# 🎯 ACCÈS DIRECT MONITEUR MOUVEMENTS (SANS AUTHENTIFICATION OBLIGATOIRE)
 # =========================================================================
 query_params = st.query_params
 view_param = query_params.get("view", None)
@@ -42,14 +51,40 @@ if view_param == "mouvements":
     from views import app_mouvements
 
     app_mouvements.show()
-    st.stop()  # Stoppe le script ici pour le 2nd onglet (pas de login requis)
+    st.stop()  # Stoppe le script ici pour la console dédiée d'entrées/sorties
 
 # =========================================================================
-# 1. VERROU D'AUTHENTIFICATION SÉCURISÉ (POUR TOUT LE RESTE DE L'APP)
+# 1. STRATÉGIE D'AUTHENTIFICATION HYBRIDE (SSO PORTAIL + YUBIKEY LOCAL)
 # =========================================================================
-if not st.session_state.get("authenticated", False):
-    login.show_login_page()
-    st.stop()  # Interrompt l'exécution si non authentifié
+# A. Interception du jeton de session si l'agent arrive depuis le Portail HUB
+token_url = query_params.get("session_token")
+
+if token_url and not auth.est_connecte():
+    try:
+        res_session = (
+            supabase.table("Sessions_Portail")
+            .select("*, Utilisateur(*)")
+            .eq("token", token_url)
+            .eq("actif", True)
+            .execute()
+        )
+        if res_session.data:
+            user_sso = res_session.data[0].get("Utilisateur")
+            if user_sso:
+                st.session_state["utilisateur"] = user_sso
+                st.session_state["connecte"] = True
+                st.session_state["session_token_actuel"] = token_url
+                st.query_params.clear()  # Nettoyage de la barre d'adresse URL
+    except Exception as err:
+        st.warning(f"⚠️ Validation du jeton SSO Portail échouée : {err}")
+
+# B. Si non authentifié (accès URL direct) ➔ Mire Hybride SDK (Mot de passe + YubiKey)
+if not auth.est_connecte():
+    ui.afficher_ecran_login(
+        nom_application="ORBIS - Main Courante V3",
+        icone="🛡️",
+    )
+    st.stop()
 
 
 # =========================================================================
@@ -79,23 +114,24 @@ def charger_sites_actifs() -> list[str]:
 
 
 # =========================================================================
-# 3. RÉCUPÉRATION SÉCURISÉE DU PROFIL & DÉTECTION HABILITATION MULTI-SITES
+# 3. RÉCUPÉRATION DYNAMIQUE DU PROFIL COMPTE & PROMOTION DES DROITS
 # =========================================================================
-if "user_profile" not in st.session_state:
-    st.session_state["user_profile"] = {
-        "full_name": "KUTER ERIC",
-        "role": "ADMIN",
-        "site_defaut": "DINUM",
-        "service": "Sécurité",
-    }
+user_auth = auth.get_user_info()
+
+# Reconstruction dynamique du profil utilisateur depuis la session authentifiée
+st.session_state["user_profile"] = {
+    "full_name": user_auth.get("nom", user_auth.get("login", "AGENT")),
+    "role": str(user_auth.get("role", "AGENT_SECU")).upper().strip(),
+    "site_defaut": user_auth.get("site_defaut", "DINUM"),
+    "service": user_auth.get("service", "PC Garde"),
+    "login": str(user_auth.get("login", "")).lower().strip(),
+}
 
 user = st.session_state["user_profile"]
+role_actif = user["role"]
+site_defaut_user = user["site_defaut"]
 
-# Normalisation du rôle
-role_actif = str(user.get("role", "AGENT_SECU")).upper().strip()
-site_defaut_user = user.get("site_defaut", "DINUM")
-
-# Chargement de la liste dynamique des sites depuis la BDD 'Sites'
+# Chargement de la liste dynamique des sites depuis Supabase
 SITES_DISPONIBLES = charger_sites_actifs()
 
 # Rôles ayant la capacité de basculer d'un site à l'autre
@@ -104,19 +140,18 @@ est_multi_sites = (role_actif in ROLES_MULTI_SITES) or (
     site_defaut_user in ["TOUS", "ALL"]
 )
 
-st.session_state["user_profile"]["role"] = role_actif
-
 
 # =========================================================================
-# 4. FONCTION DE CLÔTURE DE VACATION BDD
+# 4. FONCTION DE CLÔTURE DE VACATION ET DÉCONNOXION PORTAIL
 # =========================================================================
 def executer_deconnexion_et_cloture():
-    """Clôture la vacation 'EN_COURS' dans la table 'vacations'."""
+    """Clôture la vacation 'EN_COURS' BDD, invalide le jeton SSO et ferme la session."""
     vac_id = st.session_state.get("vacation_id")
-    agent_nom = user.get("full_name", "KUTER ERIC")
+    agent_nom = user.get("full_name", "AGENT")
     site_id = st.session_state.get("site_actif", "DINUM")
     now_dt = get_now_nc()
 
+    # 1. Clôture de la vacation en Base de Données
     try:
         if vac_id and len(str(vac_id)) == 36:
             supabase.table("vacations").update({
@@ -144,7 +179,32 @@ def executer_deconnexion_et_cloture():
     except Exception as err:
         st.warning(f"Note lors de la déconnexion BDD : {err}")
 
+    # 2. Invalidation du jeton SSO dans Sessions_Portail
+    token_actuel = st.session_state.get("session_token_actuel")
+    if token_actuel:
+        try:
+            supabase.table("Sessions_Portail").update({"actif": False}).eq(
+                "token", token_actuel
+            ).execute()
+        except Exception:
+            pass
+
+    # 3. Réinitialisation de la session locale Streamlit
     st.session_state.clear()
+    url_portail = "https://portail-gnc.streamlit.app"
+
+    # 4. Redirection / Fermeture automatique d'onglet via JS
+    st.markdown(
+        f"""
+        <script type="text/javascript">
+            window.close();
+            setTimeout(function() {{
+                window.location.href = "{url_portail}";
+            }}, 300);
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
     st.rerun()
 
 
@@ -157,11 +217,11 @@ st.sidebar.markdown("---")
 
 st.sidebar.markdown(f"👤 **{user.get('full_name', 'AGENT')}**")
 st.sidebar.caption(
-    f"🏢 Service : {user.get('service', 'PC Garde')} | 🔑 Rôle :"
+    f"🏢 Service : **{user.get('service', 'PC Garde')}** | 🔑 Rôle :"
     f" `{role_actif}`"
 )
 
-# Branchement dynamique du sélecteur de site BDD
+# Sélecteur de site dynamique selon les privilèges de l'agent
 if est_multi_sites:
     idx_defaut = (
         SITES_DISPONIBLES.index(site_defaut_user)
@@ -248,7 +308,7 @@ st.sidebar.link_button(
 
 st.sidebar.markdown("---")
 
-# BOUTON DE DÉCONNEXION AVEC CLÔTURE AUTOMATIQUE
+# BOUTON DE DÉCONNEXION ET CLÔTURE AUTOMATIQUE
 if st.sidebar.button(
     "🚪 Déconnecter & Clôturer Main Courante",
     type="primary",
