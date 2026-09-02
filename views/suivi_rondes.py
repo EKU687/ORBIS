@@ -1,4 +1,10 @@
+# =========================================================================
+# MODULE : SUIVI & ÉMARGEMENT DES RONDES DE SÛRETÉ (views/suivi_rondes.py)
+# Inclus : Génération dynamique des rondes, décalage aléatoire (0-10 min),
+#          fenêtre d'émargement active de 30 minutes et enregistrement BDD.
+# =========================================================================
 import datetime
+import hashlib
 from pathlib import Path
 import sys
 import uuid
@@ -130,37 +136,44 @@ def generer_grille_rondes_du_jour(date_cible: datetime.date) -> list[dict]:
 
 def calculer_statut_creneau(
     heure_cible_str: str, now_datetime: datetime.datetime, est_faite: bool
-) -> tuple[str, bool]:
+) -> tuple[str, bool, str, int]:
     """
-    Calcule le statut temporel (ACTIF, FUTUR, DEPASSE) avec tolérance de +/- 10 minutes,
-    en gérant le passage de minuit pour les créneaux de nuit (00:00 -> 05:00).
+    🎯 CALCUL DYNAMIQUE AVEC DÉCALAGE ALÉATOIRE (0 à 10 MIN) ET FENÊTRE ACTIVE DE 30 MIN.
+    Returns: (statut_code, bouton_actif, heure_debut_str, minutes_restantes)
     """
     if est_faite:
-        return "EFFECTUEE", False
+        return "EFFECTUEE", False, "", 0
 
     h_target, m_target = map(int, heure_cible_str.split(":"))
+    date_jour = now_datetime.date()
 
-    # Date cible initiale = aujourd'hui
-    dt_cible = now_datetime.replace(
+    # 1. Génération d'un décalage aléatoire déterministe entre 0 et 10 minutes
+    seed_str = f"{date_jour.isoformat()}_{heure_cible_str}"
+    decalage_minutes = int(hashlib.md5(seed_str.encode("utf-8")).hexdigest(), 16) % 11
+
+    # Date cible théorique (ex: 20:00)
+    dt_base = now_datetime.replace(
         hour=h_target, minute=m_target, second=0, microsecond=0
     )
 
     # 🎯 GESTION DU PASSAGE À MINUIT (00h00 -> 05h00)
-    # Si le créneau visé est en début de journée (0h-5h),
-    # et que l'heure actuelle dépasse 05h00 du matin, ce créneau appartient à la nuit suivante (J+1).
     if h_target <= 5 and now_datetime.hour >= 5:
-        dt_cible += datetime.timedelta(days=1)
+        dt_base += datetime.timedelta(days=1)
 
-    # Fenêtre de tolérance +/- 10 minutes
-    dt_debut_fenetre = dt_cible - datetime.timedelta(minutes=10)
-    dt_fin_fenetre = dt_cible + datetime.timedelta(minutes=10)
+    # 2. Définition de l'heure de début effective (+ décalage) et de fin (+30 min)
+    dt_debut_ronde = dt_base + datetime.timedelta(minutes=decalage_minutes)
+    dt_fin_ronde = dt_debut_ronde + datetime.timedelta(minutes=30)
 
-    if now_datetime < dt_debut_fenetre:
-        return "FUTUR", False
-    elif dt_debut_fenetre <= now_datetime <= dt_fin_fenetre:
-        return "ACTIF", True
+    heure_debut_str = dt_debut_ronde.strftime("%H:%M")
+
+    # 3. Évaluation du statut temporel
+    if now_datetime < dt_debut_ronde:
+        return "FUTUR", False, heure_debut_str, 0
+    elif dt_debut_ronde <= now_datetime <= dt_fin_ronde:
+        min_restantes = int((dt_fin_ronde - now_datetime).total_seconds() // 60)
+        return "ACTIF", True, heure_debut_str, min_restantes
     else:
-        return "DEPASSE", False
+        return "DEPASSE", False, heure_debut_str, 0
 
 
 def get_or_create_vacation_id(site_id: str, agent_nom: str) -> str:
@@ -288,14 +301,14 @@ def show():
     except Exception as e:
         st.error(f"❌ Erreur de lecture BDD Rondes : {e}")
 
-    # 2. Affichage des cartes de rondes avec calcul du statut temporel
+    # 2. Affichage des cartes de rondes avec décalage aléatoire et fenêtre de 30 min
     for ronde in grille_rondes:
         h_target = ronde["heure_cible"]
         type_ronde = ronde["type"]
         ref_cle = f"REF-RONDE-{today_dt.strftime('%Y%m%d')}-{h_target}"
 
         est_faite = ref_cle in rondes_validees
-        statut_code, bouton_actif = calculer_statut_creneau(
+        statut_code, bouton_actif, h_debut_genere, min_restantes = calculer_statut_creneau(
             h_target, now_nc, est_faite
         )
 
@@ -304,7 +317,10 @@ def show():
 
             with col_horaire:
                 st.markdown(f"🕒 **Créneau : {h_target}**")
-                st.caption(f"Tolérance : ±10 min")
+                if not est_faite and h_debut_genere:
+                    st.caption(f"Début aléatoire : **{h_debut_genere}**\n\n*(Fenêtre : 30 min)*")
+                else:
+                    st.caption("Tolérance : 30 min active")
 
             with col_desc:
                 st.markdown(f"🏃 **{type_ronde}**")
@@ -316,11 +332,11 @@ def show():
                     st.success(f"✅ **Effectuée à {dt_valide}** par {agent_nom}")
                     st.caption(f"Obs : {ev_info.get('description', 'RAS')}")
                 elif statut_code == "ACTIF":
-                    st.success("🟢 **Créneau ACTIF — Émargement Ouvert**")
+                    st.success(f"🟢 **Créneau ACTIF (Démarre à {h_debut_genere})** — **{min_restantes} min restantes**")
                 elif statut_code == "FUTUR":
-                    st.info("⚪ **Créneau à venir (Bouton inactif)**")
+                    st.info(f"⚪ **Ronde à venir à {h_debut_genere}** (Bouton inactif)")
                 elif statut_code == "DEPASSE":
-                    st.error("🔴 **Créneau DÉPASSÉ — Ronde non effectuée**")
+                    st.error("🔴 **Créneau DÉPASSÉ — Ronde non effectuée (>30 min)**")
 
             with col_action:
                 if not est_faite:
@@ -328,7 +344,7 @@ def show():
                         with st.popover(
                             f"📝 Émarger ronde {h_target}", use_container_width=True
                         ):
-                            st.markdown(f"**Émargement Ronde {h_target}**")
+                            st.markdown(f"**Émargement Ronde {h_target} (Début {h_debut_genere})**")
 
                             observation = st.text_input(
                                 "Observations / Consignes :",
@@ -371,7 +387,7 @@ def show():
                                     "horodatage": now_nc_local.isoformat(),
                                     "type_evenement": "RONDE",
                                     "description": (
-                                        f"Ronde {type_ronde} ({h_target}) :"
+                                        f"Ronde {type_ronde} ({h_target} - Début {h_debut_genere}) :"
                                         f" {observation}"
                                     ),
                                     "actions_menees": (
@@ -444,8 +460,11 @@ def show():
                                 except Exception as err:
                                     st.error(f"Erreur d'enregistrement : {err}")
                     else:
-                        # Libellé adapté au statut pour le bouton grisé
-                        btn_label = "🔒 Créneau futur" if statut_code == "FUTUR" else "🔒 Hors délai"
+                        btn_label = (
+                            f"🔒 À venir ({h_debut_genere})"
+                            if statut_code == "FUTUR"
+                            else "🔒 Hors délai (>30 min)"
+                        )
                         st.button(
                             btn_label,
                             key=f"btn_disabled_{h_target}",
