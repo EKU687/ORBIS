@@ -1,6 +1,11 @@
-import sys
-from pathlib import Path
+# =========================================================================
+# MODULE : ADMINISTRATION DES CONSIGNES (views/consignes_admin.py)
+# Inclus : Publication globale ou ciblée par agent, gestion des priorités,
+#          dates de validité et archivage BDD Supabase.
+# =========================================================================
 import datetime
+from pathlib import Path
+import sys
 import zoneinfo
 import pandas as pd
 import streamlit as st
@@ -26,6 +31,22 @@ def generate_id(prefix: str) -> str:
     return f"{prefix}-{now.strftime('%Y%m%d-%H%M%S')}"
 
 
+@st.cache_data(ttl=300)
+def fetch_liste_utilisateurs() -> list[dict]:
+    """Récupère la liste des agents/utilisateurs enregistrés dans Supabase pour le ciblage."""
+    try:
+        res = (
+            supabase.table("Utilisateur")
+            .select("login, nom")
+            .order("nom")
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        print(f"⚠️ Erreur chargement liste Utilisateurs : {e}")
+        return []
+
+
 def show(user_profile: dict | None = None):
     st.title("⚙️ Consignes Particulières & Temporaires (Admin)")
 
@@ -39,11 +60,11 @@ def show(user_profile: dict | None = None):
     agent_nom = user_profile.get("full_name") or st.session_state.get("full_name", "Responsable")
 
     # --- 1. CONTRÔLE D'ACCÈS (RESTRICTION STRICTE ADMIN) ---
-    ROLES_AUTORISES = ["ADMIN", "SUPER_ADMIN"]
+    ROLES_AUTORISES = ["ADMIN", "SUPER_ADMIN", "CHARGE_SURETE", "COS"]
 
     if role not in ROLES_AUTORISES:
         st.error(
-            "⛔ Accès restreint : Seuls les administrateurs "
+            "⛔ Accès restreint : Seuls les administrateurs et responsables de sûreté "
             "peuvent gérer les consignes particulières du site."
         )
         st.stop()
@@ -75,11 +96,17 @@ def show(user_profile: dict | None = None):
             f" active(s)** sur ce site."
         )
 
-        # Hauteur bloquée à 320px pour un rendu compact et propre
         with st.container(height=320):
             for csg in consignes_actives:
                 prio = csg.get("priorite", "NORMALE")
                 badge = "🔴 URGENT" if prio == "URGENTE" else "🔵 CONSIGNE"
+
+                # Détermination du libellé de ciblage
+                destinataires = csg.get("destinataires") or ["TOUS"]
+                if "TOUS" in destinataires:
+                    cible_txt = "📢 Tous les agents"
+                else:
+                    cible_txt = f"🎯 {len(destinataires)} agent(s) spécifique(s) ({', '.join(destinataires)})"
 
                 col_txt, col_act = st.columns([4, 1])
                 with col_txt:
@@ -90,7 +117,7 @@ def show(user_profile: dict | None = None):
                     st.caption(
                         f"Créée par **{csg['cree_par']}** le"
                         f" {csg['created_at'][:10]} | Expire le :"
-                        f" **{csg['fin_at'][:10]}**"
+                        f" **{csg['fin_at'][:10]}** | **Cible :** `{cible_txt}`"
                     )
 
                 with col_act:
@@ -113,16 +140,24 @@ def show(user_profile: dict | None = None):
 
     st.markdown("---")
 
-    # --- 4. FORMULAIRE DE CRÉATION D'UNE CONSIGNE ---
+    # --- 4. FORMULAIRE DE CRÉATION D'UNE CONSIGNE CIBLÉE ---
     st.subheader("➕ Rédiger une nouvelle consigne temporaire")
 
     aujourdhui_nc = get_now_nc().date()
+    liste_utilisateurs = fetch_liste_utilisateurs()
+
+    # Formattage des options pour le multiselect (Nom + Login)
+    options_agents = ["📢 TOUS LES AGENTS"] + [
+        f"{u.get('nom', 'Agent')} ({u.get('login')})"
+        for u in liste_utilisateurs
+        if u.get("login")
+    ]
 
     with st.form("form_add_consigne", clear_on_submit=True):
         titre = st.text_input(
             "Titre de la consigne *",
             placeholder=(
-                "Ex: Livraison d'équipement zone Nord, Présence VIP..."
+                "Ex: Livraison d'équipement zone Nord, Consigne Poste Après-Midi..."
             ),
         )
 
@@ -133,14 +168,22 @@ def show(user_profile: dict | None = None):
             date_debut = st.date_input(
                 "Date de début",
                 value=aujourdhui_nc,
-                format="DD/MM/YYYY",  # Format Français
+                format="DD/MM/YYYY",
             )
         with col_d2:
             date_fin = st.date_input(
                 "Date de fin (Expiration)",
                 value=aujourdhui_nc + datetime.timedelta(days=7),
-                format="DD/MM/YYYY",  # Format Français
+                format="DD/MM/YYYY",
             )
+
+        # 🎯 SÉLECTEUR DE DESTINATAIRES (GLOBAL OU AGENT(S) SPÉCIFIQUE(S))
+        destinataires_selectionnes = st.multiselect(
+            "🎯 Destinataire(s) de la consigne :",
+            options=options_agents,
+            default=["📢 TOUS LES AGENTS"],
+            help="Sélectionnez 'TOUS LES AGENTS' pour une consigne globale site, ou désélectionnez pour cibler des agents spécifiques.",
+        )
 
         description = st.text_area(
             "Consigne détaillée pour les agents *",
@@ -151,7 +194,7 @@ def show(user_profile: dict | None = None):
         )
 
         submitted = st.form_submit_button(
-            "💾 Publier la consigne site", use_container_width=True
+            "💾 Publier la consigne", use_container_width=True, type="primary"
         )
 
         if submitted:
@@ -161,10 +204,24 @@ def show(user_profile: dict | None = None):
                 )
             elif date_fin < date_debut:
                 st.error(
-                    "La date de fin ne peut pas être antérieure à la date de"
-                    " début."
+                    "La date de fin ne peut pas être antérieure à la date de début."
+                )
+            elif not destinataires_selectionnes:
+                st.error(
+                    "⚠️ Veuillez sélectionner au moins un destinataire (ou 'TOUS LES AGENTS')."
                 )
             else:
+                # Traitement et extraction des logins cibles
+                if "📢 TOUS LES AGENTS" in destinataires_selectionnes:
+                    destinataires_final = ["TOUS"]
+                else:
+                    # Extraction du login situé entre parenthèses
+                    destinataires_final = [
+                        item.split("(")[-1].replace(")", "").strip().lower()
+                        for item in destinataires_selectionnes
+                        if "(" in item
+                    ]
+
                 csg_ref = generate_id("CSG")
                 dt_start = datetime.datetime.combine(
                     date_debut, datetime.time.min, tzinfo=TZ_NC
@@ -183,14 +240,14 @@ def show(user_profile: dict | None = None):
                     "priorite": priorite,
                     "statut": "ACTIVE",
                     "cree_par": agent_nom,
+                    "destinataires": destinataires_final,  # Enregistré dans Supabase
                 }
 
                 try:
                     supabase.table("consignes").insert(payload).execute()
                     st.success(
-                        f"Consigne **{csg_ref}** enregistrée et publiée pour"
-                        f" le site {site_actuel} !"
+                        f"Consigne **{csg_ref}** enregistrée et publiée avec succès !"
                     )
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Erreur d'enregistrement : {e}")
+                    st.error(f"Erreur d'enregistrement Supabase : {e}")

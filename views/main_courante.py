@@ -1,7 +1,7 @@
 # =========================================================================
 # MODULE : MAIN COURANTE SERVICE TERRAIN (views/main_courante.py)
-# Inclus : Gestion de vacation site, pop-up de prise de poste,
-#          saisie d'événements, notifications email et journal BDD.
+# Inclus : Vacation site, pop-up de prise de poste avec filtrage dynamique
+#          des consignes (Globales & Ciblées par agent), saisie et journal.
 # =========================================================================
 import datetime
 from pathlib import Path
@@ -54,21 +54,61 @@ def get_active_vacation(site_id: str, agent_nom: str):
         return None
 
 
+def fetch_consignes_cibles_agent(site_id: str, agent_login: str) -> list[dict]:
+    """
+    🎯 Récupère les consignes actives du site et les filtre pour l'agent connecté
+    (Consignes globales "TOUS" OU destinées spécifiquement à son login).
+    """
+    now_iso = get_now_nc().isoformat()
+    try:
+        res_csg = (
+            supabase.table("consignes")
+            .select("*")
+            .eq("site_id", site_id)
+            .eq("statut", "ACTIVE")
+            .gte("fin_at", now_iso)
+            .execute()
+        )
+        
+        raw_consignes = res_csg.data if res_csg.data else []
+        consignes_valides = []
+
+        agent_login_clean = str(agent_login).lower().strip()
+
+        for csg in raw_consignes:
+            destinataires = csg.get("destinataires") or ["TOUS"]
+            
+            # Normalisation en minuscules pour comparaison stricte
+            dest_list = [str(d).lower().strip() for d in destinataires]
+
+            # 🎯 RÈGLE DE FILTRAGE : Si 'tous' est présent OU si le login de l'agent est ciblé
+            if "tous" in dest_list or agent_login_clean in dest_list:
+                consignes_valides.append(csg)
+
+        return consignes_valides
+    except Exception as e:
+        print(f"⚠️ Erreur lors du chargement des consignes ciblées : {e}")
+        return []
+
+
 # --- FENÊTRE MODALE POP-UP DE VIGILANCE & CONSIGNES PRISE DE POSTE ---
 @st.dialog("📋 CONSIGNES SITE & VIGILANCE", width="large")
 def show_consignes_dialog(site_id: str, agent_connecte: str, consignes_actives: list, anomalies_actives: list):
     st.warning(f"**Site {site_id}**")
     st.write("Veuillez prendre connaissance des consignes et points de vigilance actifs :")
     
-    # Zone défilante avec hauteur fixe pour évider que le bouton de validation ne déborde
+    # Zone défilante avec hauteur fixe pour éviter que le bouton de validation ne déborde
     with st.container(height=380):
         
-        # 1. SECTION CONSIGNES PARTICULIÈRES (ADMIN)
+        # 1. SECTION CONSIGNES PARTICULIÈRES (ADMIN) - FILTRÉES POUR L'AGENT
         if consignes_actives:
             st.markdown("### 📌 **Consignes Particulières & Temporaires**")
             for csg in consignes_actives:
                 badge = "🔴 URGENT" if csg.get("priorite") == "URGENTE" else "🔵 CONSIGNE"
-                st.markdown(f"**{badge} [{csg['reference']}] {csg['titre']}**")
+                destinataires = csg.get("destinataires") or ["TOUS"]
+                badge_cible = "🎯 (Ciblée)" if "TOUS" not in destinataires else ""
+
+                st.markdown(f"**{badge} [{csg['reference']}] {csg['titre']} {badge_cible}**")
                 st.write(f"{csg['description']}")
                 st.caption(f"Valable jusqu'au {csg['fin_at'][:10]} | Publiée par {csg['cree_par']}")
                 st.markdown("---")
@@ -112,8 +152,9 @@ def show():
     st.title("📝 Main Courante - Service Terrain")
 
     site_actuel = st.session_state.get("site_actif", "DINUM")
-    user_info = st.session_state.get("user_profile", {"full_name": "Éric KUTER"})
-    agent_connecte = user_info["full_name"]
+    user_info = st.session_state.get("user_profile", {"full_name": "Éric KUTER", "login": "eric.kuter"})
+    agent_connecte = user_info.get("full_name", "Éric KUTER")
+    agent_login = user_info.get("login", "")
 
     # 1. Vérification de la vacation active dans Supabase
     active_vacation = get_active_vacation(site_actuel, agent_connecte)
@@ -129,21 +170,8 @@ def show():
         col_start, _ = st.columns([1, 2])
         with col_start:
             if st.button("🚀 Prise de poste", type="primary", use_container_width=True):
-                now_iso = get_now_nc().isoformat()
-                
-                # Récupération des CONSIGNES actives
-                try:
-                    res_csg = (
-                        supabase.table("consignes")
-                        .select("*")
-                        .eq("site_id", site_actuel)
-                        .eq("statut", "ACTIVE")
-                        .gte("fin_at", now_iso)
-                        .execute()
-                    )
-                    consignes = res_csg.data if res_csg.data else []
-                except Exception:
-                    consignes = []
+                # 🎯 Récupération des CONSIGNES actives FILTRÉES pour l'agent connecté
+                consignes = fetch_consignes_cibles_agent(site_actuel, agent_login)
 
                 # Récupération des ANOMALIES non résolues
                 try:
@@ -158,12 +186,13 @@ def show():
                 except Exception:
                     anomalies = []
 
-                # Si au moins une consigne ou une anomalie existe -> Pop-up
+                # Si au moins une consigne personnalisée ou une anomalie existe -> Pop-up
                 if consignes or anomalies:
                     show_consignes_dialog(site_actuel, agent_connecte, consignes, anomalies)
                 else:
-                    # Prise de poste directe s'il n'y a rien à signaler
+                    # Prise de poste directe s'il n'y a rien à signaler pour cet agent
                     vac_ref = generate_id("VAC")
+                    now_iso = get_now_nc().isoformat()
 
                     payload = {
                         "reference": vac_ref,
@@ -190,16 +219,16 @@ def show():
         vac_ref = active_vacation["reference"]
         st.session_state["vacation_id"] = vac_id
 
-        # Récupération rapide du nombre d'instructions actives pour le badge
-        now_iso = get_now_nc().isoformat()
+        # 🎯 Récupération des consignes et anomalies pour l'affichage du badge d'en-tête
+        res_c = fetch_consignes_cibles_agent(site_actuel, agent_login)
         try:
-            res_c = supabase.table("consignes").select("*").eq("site_id", site_actuel).eq("statut", "ACTIVE").gte("fin_at", now_iso).execute().data or []
             res_a = supabase.table("anomalies").select("*").eq("site_id", site_actuel).neq("statut", "RESOLUE").execute().data or []
-            tot_alerts = len(res_c) + len(res_a)
         except Exception:
-            res_c, res_a, tot_alerts = [], [], 0
+            res_a = []
+            
+        tot_alerts = len(res_c) + len(res_a)
 
-        # En-tête épure (Nettoyé du doublon "Fin de poste")
+        # En-tête épuré
         col_info, col_alert = st.columns([3, 1])
         with col_info:
             st.success(
@@ -354,7 +383,7 @@ def show():
                         "Actions",
                     ]
 
-                    # 1. Conversion souple et tolérante des formats ISO 8601
+                    # 1. Conversion souple des formats ISO 8601
                     df["Heure_dt"] = pd.to_datetime(df["Heure"], format="ISO8601", utc=True, errors="coerce")
 
                     # 2. Conversion vers le fuseau horaire de Nouméa (UTC+11) et formatage HH:MM:SS
