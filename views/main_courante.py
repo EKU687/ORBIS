@@ -1,9 +1,14 @@
-import sys
-from pathlib import Path
+# =========================================================================
+# MODULE : MAIN COURANTE SERVICE TERRAIN (views/main_courante.py)
+# Inclus : Gestion de vacation site, pop-up de prise de poste,
+#          saisie d'événements, notifications email et journal BDD.
+# =========================================================================
 import datetime
+from pathlib import Path
+import sys
 import zoneinfo
-import streamlit as st
 import pandas as pd
+import streamlit as st
 
 # Fix pour assurer que Python trouve le dossier 'utils' depuis 'views'
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -29,18 +34,19 @@ def generate_id(prefix: str) -> str:
 
 
 def get_active_vacation(site_id: str, agent_nom: str):
-    """Récupère la vacation en cours depuis Supabase pour le site et l'agent."""
+    """Récupère la vacation active en cours depuis Supabase pour le site."""
     try:
         response = (
             supabase.table("vacations")
             .select("*")
             .eq("site_id", site_id)
-            .eq("agent_nom", agent_nom)
-            .eq("statut", "EN_COURS")
+            .in_("statut", ["EN_COURS", "OUVERTE"])
+            .order("created_at", desc=True)
+            .limit(1)
             .execute()
         )
 
-        if response.data:
+        if response.data and len(response.data) > 0:
             return response.data[0]
         return None
     except Exception as e:
@@ -54,7 +60,7 @@ def show_consignes_dialog(site_id: str, agent_connecte: str, consignes_actives: 
     st.warning(f"**Site {site_id}**")
     st.write("Veuillez prendre connaissance des consignes et points de vigilance actifs :")
     
-    # Zone défilante avec hauteur fixe pour éviter que le bouton de validation ne déborde
+    # Zone défilante avec hauteur fixe pour évider que le bouton de validation ne déborde
     with st.container(height=380):
         
         # 1. SECTION CONSIGNES PARTICULIÈRES (ADMIN)
@@ -80,7 +86,6 @@ def show_consignes_dialog(site_id: str, agent_connecte: str, consignes_actives: 
 
     # Bouton de validation ancré en bas du pop-up
     if st.button("✅ J'ai pris connaissance des consignes", type="primary", use_container_width=True):
-        # Si une vacation n'est pas encore ouverte, on la crée
         active_vac = get_active_vacation(site_id, agent_connecte)
         if not active_vac:
             vac_ref = generate_id("VAC")
@@ -118,7 +123,7 @@ def show():
     # ------------------------------------------------------------------
     if active_vacation is None:
         st.warning(
-            f"⚠️ Aucune vacation ouverte pour **{agent_connecte}** sur le site **{site_actuel}**."
+            f"⚠️ Aucune vacation ouverte pour le site **{site_actuel}**."
         )
 
         col_start, _ = st.columns([1, 2])
@@ -153,7 +158,7 @@ def show():
                 except Exception:
                     anomalies = []
 
-                # Si au moins une consigne ou une anomalie existe -> Affichage du Pop-up
+                # Si au moins une consigne ou une anomalie existe -> Pop-up
                 if consignes or anomalies:
                     show_consignes_dialog(site_actuel, agent_connecte, consignes, anomalies)
                 else:
@@ -183,6 +188,7 @@ def show():
     else:
         vac_id = active_vacation["id"]
         vac_ref = active_vacation["reference"]
+        st.session_state["vacation_id"] = vac_id
 
         # Récupération rapide du nombre d'instructions actives pour le badge
         now_iso = get_now_nc().isoformat()
@@ -193,8 +199,8 @@ def show():
         except Exception:
             res_c, res_a, tot_alerts = [], [], 0
 
-        # En-tête fixe et ergonomique
-        col_info, col_alert, col_close = st.columns([3, 1.5, 1])
+        # En-tête épure (Nettoyé du doublon "Fin de poste")
+        col_info, col_alert = st.columns([3, 1])
         with col_info:
             st.success(
                 f"🟢 **Vacation active :** `{vac_ref}` | 📍 **Site :** {site_actuel} | 👤 **Agent :** {agent_connecte}"
@@ -206,18 +212,6 @@ def show():
                     show_consignes_dialog(site_actuel, agent_connecte, res_c, res_a)
             else:
                 st.caption("✅ Aucune consigne active")
-
-        with col_close:
-            if st.button("🔴 Fin de poste", type="secondary", use_container_width=True):
-                now = get_now_nc().isoformat()
-                try:
-                    supabase.table("vacations").update(
-                        {"fin_at": now, "statut": "CLOTUREE"}
-                    ).eq("id", vac_id).execute()
-                    st.info(f"Vacation `{vac_ref}` clôturée avec succès.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Erreur lors de la clôture de la vacation : {e}")
 
         st.markdown("---")
 
@@ -263,7 +257,7 @@ def show():
                 )
 
                 submitted = st.form_submit_button(
-                    "💾 Enregistrer l'événement", use_container_width=True
+                    "💾 Enregistrer l'événement", use_container_width=True, type="primary"
                 )
 
                 if submitted:
