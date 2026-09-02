@@ -1,8 +1,13 @@
-import sys
-from pathlib import Path
+# =========================================================================
+# MODULE : CONSULTATION RÉFÉRENTIEL PRESTATAIRES (views/recherche_prestataires.py)
+# Inclus : Interrogation Supabase, conversion des UUIDs de sites,
+#          affichage du statut terrain et intégration de la Société.
+# =========================================================================
 import datetime
-import streamlit as st
+from pathlib import Path
+import sys
 import pandas as pd
+import streamlit as st
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -39,8 +44,7 @@ def resolve_sites_names(sites_raw, sites_map: dict) -> str:
     """Convertit un ou plusieurs UUIDs de sites en leurs noms lisibles."""
     if not sites_raw:
         return "Non spécifié"
-    
-    # Gestion si le champ est une liste ou une chaîne d'UUIDs
+
     if isinstance(sites_raw, list):
         uuids = sites_raw
     else:
@@ -52,7 +56,10 @@ def resolve_sites_names(sites_raw, sites_map: dict) -> str:
 
 def show():
     st.title("🔍 Consultation Référentiel Prestataires (IDENTIS)")
-    st.caption("Module en **lecture seule** — Contrôle des habilitations et accès intervenants.")
+    st.caption(
+        "Module en **lecture seule** — Contrôle des habilitations et accès"
+        " intervenants."
+    )
 
     site_actuel = st.session_state.get("site_actif", "DINUM")
     today = datetime.date.today()
@@ -60,13 +67,22 @@ def show():
 
     # --- 1. BARRE DE RECHERCHE ET FILTRES ---
     col_search, col_statut, col_badge = st.columns([2, 1, 1])
-    
+
     with col_search:
-        query_nom = st.text_input("🔎 Nom, Prénom ou Identifiant (ID Ident) :", placeholder="Ex: ARAMION, PRES-2026...")
+        query_nom = st.text_input(
+            "🔎 Nom, Prénom ou Identifiant (ID Ident) :",
+            placeholder="Ex: ARAMION, PRES-2026...",
+        )
     with col_statut:
-        filter_statut = st.selectbox("🛡️ Statut d'accès terrain :", ["TOUS", "AUTORISE", "EN_ATTENTE", "SUSPENDU", "EXPIRE"])
+        filter_statut = st.selectbox(
+            "🛡️ Statut d'accès terrain :",
+            ["TOUS", "AUTORISE", "EN_ATTENTE", "SUSPENDU", "EXPIRE"],
+        )
     with col_badge:
-        filter_badge = st.selectbox("🏷️ Type de badge :", ["TOUS", "PERMANENT", "TEMPORAIRE", "VISITEUR"])
+        filter_badge = st.selectbox(
+            "🏷️ Type de badge :",
+            ["TOUS", "PERMANENT", "TEMPORAIRE", "VISITEUR"],
+        )
 
     st.markdown("---")
 
@@ -75,8 +91,10 @@ def show():
         req = supabase.table("Prestataires").select("*")
 
         if query_nom.strip():
-            req = req.or_(f"nom.ilike.%{query_nom}%,prenom.ilike.%{query_nom}%,id_ident.ilike.%{query_nom}%")
-        
+            req = req.or_(
+                f"nom.ilike.%{query_nom}%,prenom.ilike.%{query_nom}%,id_ident.ilike.%{query_nom}%"
+            )
+
         if filter_badge != "TOUS":
             req = req.eq("type_badge", filter_badge)
 
@@ -94,11 +112,13 @@ def show():
         for p in prestataires:
             statut_raw = (p.get("statut") or "INCONNU").upper()
             dt_fin_raw = p.get("date_fin_prestation")
-            
+
             is_expired = False
             if dt_fin_raw:
                 try:
-                    dt_fin_obj = datetime.datetime.strptime(dt_fin_raw.split("T")[0], "%Y-%m-%d").date()
+                    dt_fin_obj = datetime.datetime.strptime(
+                        dt_fin_raw.split("T")[0], "%Y-%m-%d"
+                    ).date()
                     if dt_fin_obj < today:
                         is_expired = True
                 except Exception:
@@ -110,7 +130,13 @@ def show():
             elif is_expired:
                 status_key = "EXPIRE"
                 badge = "🟠 **PRESTATION EXPIRÉE**"
-            elif statut_raw in ["CLOTURE", "CLÔTURÉ", "VALIDE", "AUTORISE", "ACTIF"]:
+            elif statut_raw in [
+                "CLOTURE",
+                "CLÔTURÉ",
+                "VALIDE",
+                "AUTORISE",
+                "ACTIF",
+            ]:
                 status_key = "AUTORISE"
                 badge = "🟢 **ACCÈS AUTORISÉ (DOSSIER VALIDÉ)**"
             elif statut_raw in ["EN_ATTENTE", "ATTENTE"]:
@@ -127,41 +153,79 @@ def show():
                 results_to_display.append(p)
 
         st.subheader(f"📋 {len(results_to_display)} prestataire(s) trouvé(s)")
-        
+
         if results_to_display:
             with st.container(height=420):
                 for p in results_to_display:
                     dt_debut = format_date_fr(p.get("date_debut_validite"))
                     dt_fin = format_date_fr(p.get("date_fin_prestation"))
-                    
+
                     hab = p.get("niveau_habilitation") or "Standard"
                     badge_type = p.get("type_badge") or "Non défini"
                     ref_id = p.get("id_ident") or "N/A"
-                    
+
+                    # 🎯 Récupération souple de la Société / Entreprise
+                    societe = (
+                        p.get("societe")
+                        or p.get("organisme")
+                        or p.get("entreprise")
+                        or "Non renseignée"
+                    )
+
                     # Résolution des UUIDs vers le nom_site lisible
-                    sites_raw = p.get("id_sites") or p.get("id_site") or p.get("site_autorise")
+                    sites_raw = (
+                        p.get("id_sites")
+                        or p.get("id_site")
+                        or p.get("site_autorise")
+                    )
                     sites_display = resolve_sites_names(sites_raw, sites_map)
 
-                    with st.expander(f"{p['computed_badge']} — **{p['nom'].upper()} {p['prenom']}** (ID: `{ref_id}`)", expanded=False):
+                    # 🎯 1. Entête enrichie avec le nom de la société
+                    title_expander = (
+                        f"{p['computed_badge']} — **{p['nom'].upper()}"
+                        f" {p['prenom']}** (*{societe}*) (ID: `{ref_id}`)"
+                    )
+
+                    with st.expander(title_expander, expanded=False):
                         c1, c2, c3 = st.columns(3)
-                        
+
                         with c1:
                             st.write(f"**Identifiant IDENTIS :** `{ref_id}`")
-                            st.write(f"**Téléphone :** {p.get('telephone') or 'N/A'}")
+                            # 🎯 2. Ajout de la ligne Société dans la 1ère colonne
+                            st.write(
+                                "🏢 **Société / Entreprise :**"
+                                f" **{societe}**"
+                            )
+                            st.write(
+                                "**Téléphone :**"
+                                f" {p.get('telephone') or 'N/A'}"
+                            )
                             st.write(f"**Email :** {p.get('email') or 'N/A'}")
 
                         with c2:
                             st.write(f"**Type de badge :** `{badge_type}`")
                             st.write(f"**Habilitation :** `{hab}`")
-                            st.write(f"**Site(s) autorisé(s) :** `{sites_display}`")
-                            st.write(f"**Agent référent GNC :** {p.get('agent_referent_gnc') or 'Non défini'}")
+                            st.write(
+                                "**Site(s) autorisé(s) :**"
+                                f" `{sites_display}`"
+                            )
+                            st.write(
+                                "**Agent référent GNC :**"
+                                f" {p.get('agent_referent_gnc') or 'Non défini'}"
+                            )
 
                         with c3:
                             st.write(f"**Début validité :** {dt_debut}")
                             st.write(f"**Fin prestation :** `{dt_fin}`")
-                            st.caption(f"Statut IDENTIS d'origine : {p.get('statut')}")
+                            st.caption(
+                                "Statut IDENTIS d'origine :"
+                                f" {p.get('statut')}"
+                            )
 
         else:
-            st.info("🔍 Aucun prestataire ne correspond au statut d'accès sélectionné.")
+            st.info(
+                "🔍 Aucun prestataire ne correspond au statut d'accès"
+                " sélectionné."
+            )
     else:
         st.info("🔍 Aucun prestataire trouvé dans la base.")
