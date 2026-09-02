@@ -217,7 +217,7 @@ badge_env = "🟢 PROD" if APP_ENV == "PRODUCTION" else "🟠 BÊTA"
 
 # Sous-titre dynamique combinant le nom du module, la version et le statut
 st.sidebar.caption(
-    f"🛡️ **{APP_SUBTITLE}**\n\n"
+    f"🛡️ **{APP_NAME}**\n\n"
     f"📌 Version : `{APP_VERSION}` | {badge_env}\n\n"
     f"📅 Mis à jour le : {APP_DATE} | 📍 NC (UTC+11)"
 )
