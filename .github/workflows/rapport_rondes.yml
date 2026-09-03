@@ -4,7 +4,6 @@ on:
   schedule:
     # 19:00 UTC = 06:00 du matin heure de Nouméa (Pacific/Noumea, UTC+11)
     - cron: '0 19 * * *'
-  # Permet également de lancer le rapport manuellement depuis l'interface GitHub
   workflow_dispatch:
 
 jobs:
