@@ -49,9 +49,9 @@ query_params = st.query_params
 view_param = query_params.get("view", None)
 
 if view_param == "mouvements":
-    from views import app_mouvement
+    from views import app_mouvements
 
-    app_mouvement.show()
+    app_mouvements.show()
     st.stop()  # Stoppe le script ici pour la console dédiée d'entrées/sorties
 
 # =========================================================================
