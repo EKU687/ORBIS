@@ -85,6 +85,27 @@ def get_or_create_vacation_id(site_id: str, agent_nom: str) -> str:
         return new_id
 
 
+def fetch_badges_temporaires_actifs(site_id: str) -> dict[str, str]:
+    """Récupère une table de correspondance Nom du porteur -> Numéro de badge depuis badges_temporaires."""
+    badge_map = {}
+    try:
+        res = (
+            supabase.table("badges_temporaires")
+            .select("nom_porteur, num_badge")
+            .eq("site_id", str(site_id))
+            .eq("statut", "EN_COURS")
+            .execute()
+        )
+        for row in (res.data or []):
+            nom = str(row.get("nom_porteur", "")).strip().upper()
+            bdg = row.get("num_badge")
+            if nom and bdg:
+                badge_map[nom] = bdg
+    except Exception as e:
+        print(f"Note lecture badges_temporaires : {e}")
+    return badge_map
+
+
 def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tuple[dict, set, set, set]:
     """Interroge Supabase pour déterminer la présence réelle et les absences/annulations à une date cible."""
     dt_start = datetime.datetime.combine(
@@ -98,6 +119,9 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
     sortis_set = set()
     absents_set = set()
     badges_occupes = set()
+
+    # Chargement de la correspondance depuis la table badges_temporaires
+    map_badges_bdd = fetch_badges_temporaires_actifs(site_id)
 
     try:
         res = (
@@ -118,9 +142,13 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
             # Détection entrée
             if "-IN-" in ref:
                 badge = "Aucun"
-                if "(Badge V." in desc:
-                    badge = desc.split("(Badge ")[1].split(")")[0]
-                elif "(Badge LIVRAISON)" in desc:
+
+                # 🎯 PARSING SOUPLIFIÉ : Extraction depuis la description
+                if "- Badge " in desc:
+                    badge = desc.split("- Badge ")[1].split(".")[0].split(" ")[0].strip()
+                elif "(Badge " in desc:
+                    badge = desc.split("(Badge ")[1].split(")")[0].strip()
+                elif "LIVRAISON" in desc.upper():
                     badge = "LIVRAISON"
 
                 nom_key = (
@@ -129,12 +157,16 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
                     else desc.strip().upper()
                 )
 
+                # 🎯 RECOURS BDD : Si le parsing texte renvoie "Aucun", on interroge badges_temporaires
+                if badge in ["Aucun", ""] and nom_key in map_badges_bdd:
+                    badge = map_badges_bdd[nom_key]
+
                 presents_dict[nom_key] = {
                     "badge": badge,
                     "description": desc,
                     "ref_in": ref,
                 }
-                if badge.startswith("V."):
+                if badge.startswith("V.") or badge.startswith("T."):
                     badges_occupes.add(badge)
 
             # Détection sortie
@@ -176,7 +208,7 @@ def show():
     user_info = st.session_state.get(
         "user_profile", {"full_name": "Éric KUTER"}
     )
-    agent_connecte = user_info["full_name"]
+    agent_connecte = user_info.get("full_name", "Éric KUTER")
 
     # 1. Date courante en Nouvelle-Calédonie
     aujourdhui_nc = datetime.datetime.now(TZ_NC).date()
@@ -218,7 +250,7 @@ def show():
 
     tous_badges = [f"V.{i:03d}" for i in range(1, 31)]
     
-    # 🎯 INTÉGRATION DU MODE LIVRAISON DANS LA LISTE DÉROULANTE
+    # INTÉGRATION DU MODE LIVRAISON DANS LA LISTE DÉROULANTE
     badges_disponibles = (
         ["Sélectionner un badge...", "📦 LIVRAISON (Sans badge)"] 
         + [b for b in tous_badges if b not in badges_occupes]
@@ -257,6 +289,17 @@ def show():
                     ):
                         now_nc = datetime.datetime.now(TZ_NC)
                         ref_time = now_nc.strftime("%Y%m%d-%H%M%S")
+
+                        # Libération du badge dans badges_temporaires si présent
+                        try:
+                            supabase.table("badges_temporaires").update(
+                                {
+                                    "statut": "RESTITUE",
+                                    "heure_restitution": now_nc.isoformat(),
+                                }
+                            ).eq("site_id", str(site_actuel)).eq("nom_porteur", nom_key).eq("statut", "EN_COURS").execute()
+                        except Exception as err_rest:
+                            print(f"Note libération badge_temporaire : {err_rest}")
 
                         payload_sortie = {
                             "reference": f"REF-VIS-IMP-OUT-{ref_time}",
@@ -365,7 +408,6 @@ def show():
                         if est_present:
                             badge_attribue = presents_bdd[nom_visiteur]["badge"]
                             
-                            # Affichage distinct de l'étiquette selon le type
                             if badge_attribue == "LIVRAISON":
                                 st.warning("📦 **Livraison en cours (Quai)**")
                             else:
@@ -377,6 +419,17 @@ def show():
                                 use_container_width=True,
                                 type="secondary",
                             ):
+                                # Libération du badge dans badges_temporaires si présent
+                                try:
+                                    supabase.table("badges_temporaires").update(
+                                        {
+                                            "statut": "RESTITUE",
+                                            "heure_restitution": now_nc.isoformat(),
+                                        }
+                                    ).eq("site_id", str(site_actuel)).eq("nom_porteur", nom_visiteur).eq("statut", "EN_COURS").execute()
+                                except Exception as err_rest:
+                                    print(f"Note libération badge_temporaire : {err_rest}")
+
                                 desc_sortie = (
                                     f"Départ Livraison / Camion : {nom_visiteur} (Quai déchargement libéré)."
                                     if badge_attribue == "LIVRAISON"
@@ -413,7 +466,6 @@ def show():
                                 key=f"sel_bdg_{idx}",
                             )
                             
-                            # 🎯 VALIDATION DU BOUTON ARRIVÉE (Si badge physique OU si mode Livraison)
                             badge_valide = (
                                 badge_sel != "Sélectionner un badge..."
                             )
@@ -432,6 +484,23 @@ def show():
                                     valeur_badge = "LIVRAISON" if est_livraison else badge_sel
                                     ref_entree = "REF-VIS-LIV-IN" if est_livraison else "REF-VIS-IN"
                                     
+                                    # Enregistrement dans badges_temporaires
+                                    payload_badge_asap = {
+                                        "site_id": site_actuel,
+                                        "num_badge": valeur_badge,
+                                        "nom_porteur": nom_visiteur,
+                                        "type_porteur": "VISITEUR_ATTENDU",
+                                        "hote_referent": organisateur,
+                                        "statut": "EN_COURS",
+                                        "heure_attribution": now_nc.isoformat(),
+                                    }
+                                    try:
+                                        supabase.table("badges_temporaires").upsert(
+                                            payload_badge_asap, on_conflict="site_id,num_badge"
+                                        ).execute()
+                                    except Exception as err_b:
+                                        print(f"Note enregistrement badge ASAP : {err_b}")
+
                                     desc_entree = (
                                         f"Arrivée Livraison / Quai : {nom_visiteur} (Société / Livreurs) pour {organisateur} (Badge LIVRAISON)."
                                         if est_livraison
