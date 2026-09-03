@@ -253,20 +253,23 @@ def fetch_mouvements_jour(site_nom: str, site_uuid: str, date_cible: datetime.da
                     nom_complet = f"{ag.get('nom', '').upper()} {ag.get('prenom', '')}".strip()
                     item_id = str(ag.get("id"))
                     ev_bdd = pointages_bdd.get(item_id, {})
+                    statut_mvt = ev_bdd.get("statut_passage", "")
 
+                    # 🎯 FILTRAGE : Si validé par la Sûreté, l'arrivée est traitée et masquée
                     if (ag.get("date_debut_validite") == date_str) and (ag_statut in STATUTS_ARRIVEE):
-                        arrivants.append({
-                            "id": item_id,
-                            "id_ident": ag.get("id_ident"),
-                            "nom": nom_complet,
-                            "organisme": ag.get("direction") or ag.get("organisme") or "Agent Public (GNC)",
-                            "type": "Agent Public",
-                            "type_badge": ag.get("type_badge", "N/A"),
-                            "niveau_hab": ag.get("niveau_habilitation", "Niveau 1"),
-                            "service_str": ag.get("service") or ag.get("direction") or "Agent Public",
-                            "source": "Agents_Publics",
-                            "pointage_bdd": ev_bdd,
-                        })
+                        if statut_mvt != "SURETE_VALIDE":
+                            arrivants.append({
+                                "id": item_id,
+                                "id_ident": ag.get("id_ident"),
+                                "nom": nom_complet,
+                                "organisme": ag.get("direction") or ag.get("organisme") or "Agent Public (GNC)",
+                                "type": "Agent Public",
+                                "type_badge": ag.get("type_badge", "N/A"),
+                                "niveau_hab": ag.get("niveau_habilitation", "Niveau 1"),
+                                "service_str": ag.get("service") or ag.get("direction") or "Agent Public",
+                                "source": "Agents_Publics",
+                                "pointage_bdd": ev_bdd,
+                            })
 
                     if (ag.get("date_fin_validite") == date_str) and (ag_statut in STATUTS_DEPART):
                         departs.append({
@@ -300,20 +303,23 @@ def fetch_mouvements_jour(site_nom: str, site_uuid: str, date_cible: datetime.da
                     nom_complet = f"{pr.get('nom', '').upper()} {pr.get('prenom', '')}".strip()
                     item_id = str(pr.get("id"))
                     ev_bdd = pointages_bdd.get(item_id, {})
+                    statut_mvt = ev_bdd.get("statut_passage", "")
 
+                    # 🎯 FILTRAGE : Si validé par la Sûreté, l'arrivée est traitée et masquée
                     if (pr.get("date_debut_validite") == date_str) and (pr_statut in STATUTS_ARRIVEE):
-                        arrivants.append({
-                            "id": item_id,
-                            "id_ident": pr.get("id_ident"),
-                            "nom": nom_complet,
-                            "organisme": pr.get("agent_referent_gnc") or "Prestataire Externe",
-                            "type": "Prestataire",
-                            "type_badge": pr.get("type_badge", "N/A"),
-                            "niveau_hab": pr.get("niveau_habilitation", "Niveau 1"),
-                            "service_str": pr.get("societe") or "Prestataire Externe",
-                            "source": "Prestataires",
-                            "pointage_bdd": ev_bdd,
-                        })
+                        if statut_mvt != "SURETE_VALIDE":
+                            arrivants.append({
+                                "id": item_id,
+                                "id_ident": pr.get("id_ident"),
+                                "nom": nom_complet,
+                                "organisme": pr.get("agent_referent_gnc") or "Prestataire Externe",
+                                "type": "Prestataire",
+                                "type_badge": pr.get("type_badge", "N/A"),
+                                "niveau_hab": pr.get("niveau_habilitation", "Niveau 1"),
+                                "service_str": pr.get("societe") or "Prestataire Externe",
+                                "source": "Prestataires",
+                                "pointage_bdd": ev_bdd,
+                            })
 
                     if (pr.get("date_fin_prestation") == date_str) and (pr_statut in STATUTS_DEPART):
                         departs.append({
@@ -467,7 +473,6 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
                     st.markdown("---")
                     st.markdown("##### ⚙️ 2. Check-List de Conformité & Émargement (Chargé de Sûreté / Admin)")
 
-                    # LOGIQUE CORRIGÉE : désactivé seulement si non-admin, non encore contrôlé par l'agent, ou déjà validé par la Sûreté
                     desactiver_p2 = (not est_admin) or (not passage_deja_enregistre) or surete_deja_enregistree
 
                     chk_photo_val = ev_bdd.get("check_photo", False)
@@ -515,7 +520,7 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
                                 st.rerun()
 
         else:
-            st.info(f"ℹ️ Aucune arrivée prévue pour le site {site_actuel} à la date du {date_cible.strftime('%d/%m/%Y')}.")
+            st.info(f"ℹ️ Aucune arrivée en attente pour le site {site_actuel} à la date du {date_cible.strftime('%d/%m/%Y')}.")
 
     # --- TAB 2 : DÉPARTS ---
     with tab_departs:
@@ -581,19 +586,12 @@ def show():
         "CHARGE_SURETE", "CHARGE DE SURETE", "COS"
     ]
     
-    # Évaluation forcée : True si le rôle correspond OU si le nom contient KUTER
     est_admin_session = (
         role_clean in ROLES_AUTORISES 
         or "ADMIN" in role_clean 
         or "SURETE" in role_clean 
         or "KUTER" in full_name
     )
-
-    # BANNIÈRE DE DIAGNOSTIC D'ACCÈS
-    if est_admin_session:
-        st.success(f"🔓 **Mode Sûreté / Admin Déverrouillé** | Utilisateur : `{full_name}` | Rôle : `{role_clean}`")
-    else:
-        st.warning(f"🔒 **Mode Agent de Garde (Étape 2 restreinte)** | Rôle perçu : `{role_clean}` | Requis : Admin/Sûreté")
 
     site_sollicite = None
     site_cle_admin = False
