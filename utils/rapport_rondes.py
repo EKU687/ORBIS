@@ -8,11 +8,42 @@ if str(ROOT_DIR) not in sys.path:
 
 import datetime
 import zoneinfo
+from tenacity import retry, stop_after_attempt, wait_fixed
 from utils.db_client import supabase
 from utils.email_sender import send_alert_email
 from views.suivi_rondes import generer_grille_rondes_du_jour
 
 TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5), reraise=False)
+def fetch_sites_actifs() -> list[str]:
+    """Récupère la liste des sites actifs sur Supabase avec 3 tentatives en cas de timeout."""
+    res_sites = (
+        supabase.table("Sites")
+        .select("nom_site")
+        .eq("actif", True)
+        .execute()
+    )
+    return [s["nom_site"] for s in (res_sites.data or []) if s.get("nom_site")]
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5), reraise=False)
+def fetch_rondes_realisees(site_id: str, dt_debut_iso: str, dt_fin_iso: str) -> dict:
+    """Récupère les émargements de rondes pour un site et une plage horaire donnée."""
+    res_r = (
+        supabase.table("mc_evenements")
+        .select("*")
+        .eq("site_id", site_id)
+        .eq("type_evenement", "RONDE")
+        .gte("horodatage", dt_debut_iso)
+        .lte("horodatage", dt_fin_iso)
+        .execute()
+    )
+    rondes = {}
+    for ev in res_r.data or []:
+        rondes[ev.get("reference", "")] = ev
+    return rondes
 
 
 def generer_et_envoyer_rapport_nuit_tous_sites():
@@ -29,23 +60,17 @@ def generer_et_envoyer_rapport_nuit_tous_sites():
         today, datetime.time(5, 0), tzinfo=TZ_NC
     )
 
-    # Récupération des sites actifs
+    # 1. Récupération des sites actifs (avec fallback sécurisé)
     try:
-        res_sites = (
-            supabase.table("Sites")
-            .select("nom_site")
-            .eq("actif", True)
-            .execute()
-        )
-        sites = [
-            s["nom_site"] for s in (res_sites.data or []) if s.get("nom_site")
-        ]
+        sites = fetch_sites_actifs()
+        if not sites:
+            sites = ["SITE OUEMO", "SITE DOUMER"]
     except Exception as e:
-        print(f"⚠️ Erreur chargement sites : {e}")
+        print(f"⚠️ Erreur chargement sites (Fallback activé) : {e}")
         sites = ["SITE OUEMO", "SITE DOUMER"]
 
     for site_id in sites:
-        # 1. Grille théorique de la nuit (20:00 -> 05:00)
+        # 2. Grille théorique de la nuit (20:00 -> 05:00)
         grille_hier = generer_grille_rondes_du_jour(yesterday)
         creneaux_nuit = [
             r
@@ -65,24 +90,16 @@ def generer_et_envoyer_rapport_nuit_tous_sites():
             ]
         ]
 
-        # 2. Récupération des émargements en BDD
-        rondes_realisees = {}
+        # 3. Récupération des émargements en BDD avec retry
         try:
-            res_r = (
-                supabase.table("mc_evenements")
-                .select("*")
-                .eq("site_id", site_id)
-                .eq("type_evenement", "RONDE")
-                .gte("horodatage", dt_debut_nuit.isoformat())
-                .lte("horodatage", dt_fin_nuit.isoformat())
-                .execute()
+            rondes_realisees = fetch_rondes_realisees(
+                site_id, dt_debut_nuit.isoformat(), dt_fin_nuit.isoformat()
             )
-            for ev in res_r.data or []:
-                rondes_realisees[ev.get("reference", "")] = ev
         except Exception as err:
-            print(f"Erreur lecture BDD : {err}")
+            print(f"⚠️ Erreur lecture BDD pour {site_id} : {err}")
+            rondes_realisees = {}
 
-        # 3. Bilan et détection des omissions
+        # 4. Bilan et détection des omissions
         nb_ok = 0
         nb_ko = 0
         lignes_html = ""
@@ -122,7 +139,7 @@ def generer_et_envoyer_rapport_nuit_tous_sites():
             round((nb_ok / len(creneaux_nuit)) * 100, 1) if creneaux_nuit else 0
         )
 
-        # 4. Construction de l'e-mail HTML
+        # 5. Construction de l'e-mail HTML
         sujet = f"📊 Rapport Rondes de Nuit — {site_id} ({today.strftime('%d/%m/%Y')})"
         corps_html = f"""
         <h2>🔦 Bilan des Rondes de Nuit — {site_id}</h2>
@@ -150,13 +167,16 @@ def generer_et_envoyer_rapport_nuit_tous_sites():
         <p><small>Rapport automatique généré par ORBIS Main Courante V3.</small></p>
         """
 
-        # Envoi de l'e-mail au Chargé de Sûreté
-        send_alert_email(
-            subject=sujet,
-            body_html=corps_html,
-            recipient_email="eric.kuter@gouv.nc",
-        )
-        print(f"✉️ Rapport de nuit transmis pour {site_id}")
+        # 6. Envoi de l'e-mail au Chargé de Sûreté
+        try:
+            send_alert_email(
+                subject=sujet,
+                body_html=corps_html,
+                recipient_email="eric.kuter@gouv.nc",
+            )
+            print(f"✉️ Rapport de nuit transmis avec succès pour {site_id}")
+        except Exception as mail_err:
+            print(f"❌ Erreur lors de l'envoi de l'e-mail pour {site_id} : {mail_err}")
 
 
 if __name__ == "__main__":
