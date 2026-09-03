@@ -2,7 +2,7 @@
 # APPLICATION : MAIN COURANTE V3 - PC GARDE (ORBIS)
 # Inclus : Gestion SSO Portail HUB, Support YubiKey/Password via SDK,
 #          Moniteur Mouvements direct, Horodatage Pacific/Noumea (UTC+11),
-#          Déconnexion simple (vacation maintenue) ET Clôture explicite de poste.
+#          Déconnexion neutre (vacation maintenue) pour le terrain.
 # =========================================================================
 import datetime
 from pathlib import Path
@@ -139,7 +139,7 @@ est_multi_sites = (role_actif in ROLES_MULTI_SITES) or (
 
 
 # =========================================================================
-# 4. FONCTIONS SÉPARÉES : DÉCONNEXION SIMPLE VS CLÔTURE DE VACATION
+# 4. FONCTION UNIQUE DE DÉCONNEXION NEUTRE (CONSERVE LA VACATION EN BDD)
 # =========================================================================
 def executer_deconnexion_simple():
     """Déconnecte l'agent SANS clôturer la vacation active en base de données."""
@@ -169,53 +169,13 @@ def executer_deconnexion_simple():
     st.rerun()
 
 
-def executer_cloture_vacation_explicite():
-    """Effectue la clôture administrative officielle du poste en BDD (Fin de vacation)."""
-    vac_id = st.session_state.get("vacation_id")
-    agent_nom = user.get("full_name", "AGENT")
-    site_id = st.session_state.get("site_actif", "DINUM")
-    now_dt = get_now_nc()
-
-    try:
-        if vac_id and len(str(vac_id)) == 36:
-            supabase.table("vacations").update({
-                "statut": "CLOTUREE",
-                "fin_at": now_dt.isoformat(),
-            }).eq("id", vac_id).execute()
-        else:
-            supabase.table("vacations").update({
-                "statut": "CLOTUREE",
-                "fin_at": now_dt.isoformat(),
-            }).eq("site_id", site_id).in_("statut", ["OUVERTE", "EN_COURS"]).execute()
-
-        payload_fin = {
-            "reference": f"REF-FIN-VAC-{now_dt.strftime('%Y%m%d-%H%M%S')}",
-            "vacation_id": vac_id if (vac_id and len(str(vac_id)) == 36) else None,
-            "site_id": site_id,
-            "agent_nom": agent_nom,
-            "horodatage": now_dt.isoformat(),
-            "type_evenement": "FIN_VACATION",
-            "description": f"🚪 Clôture explicite de vacation par {agent_nom} — Fin de service PC Garde.",
-            "actions_menees": "Passation / Fin de poste enregistrée et vacation fermée (CLOTUREE).",
-        }
-        supabase.table("mc_evenements").insert(payload_fin).execute()
-        st.toast("✅ Vacation clôturée avec succès en Base de Données !", icon="🚪")
-
-    except Exception as err:
-        st.warning(f"Note lors de la clôture BDD : {err}")
-
-    executer_deconnexion_simple()
-
-
 # =========================================================================
-# 5. SIDEBAR : EN-TÊTE DYNAMIQUE AVEC VERSIONNING (SemVer)
+# 5. SIDEBAR : EN-TÊTE DYNAMIQUE AVEC VERSIONNING
 # =========================================================================
 st.sidebar.markdown("## 🌐 **ORBIS**")
 
-# Badge d'environnement visuel (PROD ou BÊTA)
 badge_env = "🟢 PROD" if APP_ENV == "PRODUCTION" else "🟠 BÊTA"
 
-# Sous-titre dynamique combinant le nom du module, la version et le statut
 st.sidebar.caption(
     f"🛡️ **{APP_SUBTITLE}**\n\n"
     f"📌 Version : `{APP_VERSION}` | {badge_env}\n\n"
@@ -313,22 +273,15 @@ st.sidebar.link_button(
 st.sidebar.markdown("---")
 
 # =========================================================================
-# 7.2. GESTION DISTINCTE DE LA DECONNEXION ET DE LA FIN DE POSTE
+# 7.2. BOUTON UNIQUE DE DÉCONNEXION NEUTRE
 # =========================================================================
 if st.sidebar.button(
-    "🔒 Se Déconnecter (Maintenir Vacation)",
-    use_container_width=True,
-    help="Ferme l'accès applicatif sans fermer le registre de vacation du site.",
-):
-    executer_deconnexion_simple()
-
-if st.sidebar.button(
-    "🛑 Clôturer Vacation & Fin de Poste",
+    "🚪 Déconnexion",
     type="primary",
     use_container_width=True,
-    help="Réservé aux fins de poste : clôture la vacation sur le registre Supabase.",
+    help="Déconnecte l'agent du PC Garde sans fermer la vacation en cours.",
 ):
-    executer_cloture_vacation_explicite()
+    executer_deconnexion_simple()
 
 # =========================================================================
 # 8. ROUTAGE DES MODULES MÉTIER
