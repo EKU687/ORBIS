@@ -3,6 +3,7 @@
 # Inclus : Synchronisation BDD, Gestion des imprévus, Planning ASAP,
 #          et Mode Livraison Quai / Sans Badge physique.
 # =========================================================================
+import re
 import datetime
 import io
 from pathlib import Path
@@ -120,7 +121,6 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
     absents_set = set()
     badges_occupes = set()
 
-    # Chargement de la correspondance depuis la table badges_temporaires
     map_badges_bdd = fetch_badges_temporaires_actifs(site_id)
 
     try:
@@ -143,11 +143,10 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
             if "-IN-" in ref:
                 badge = "Aucun"
 
-                # 🎯 PARSING SOUPLIFIÉ : Extraction depuis la description
-                if "- Badge " in desc:
-                    badge = desc.split("- Badge ")[1].split(".")[0].split(" ")[0].strip()
-                elif "(Badge " in desc:
-                    badge = desc.split("(Badge ")[1].split(")")[0].strip()
+                # 🎯 EXTRACTION PAR REGEX PARFAITE (Ex: V.001, T.015, LIVRAISON)
+                match_badge = re.search(r"Badge\s+([VTL]\.?[0-9A-Z_]+)", desc, re.IGNORECASE)
+                if match_badge:
+                    badge = match_badge.group(1).upper()
                 elif "LIVRAISON" in desc.upper():
                     badge = "LIVRAISON"
 
@@ -157,8 +156,8 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
                     else desc.strip().upper()
                 )
 
-                # 🎯 RECOURS BDD : Si le parsing texte renvoie "Aucun", on interroge badges_temporaires
-                if badge in ["Aucun", ""] and nom_key in map_badges_bdd:
+                # RECOURS BDD (badges_temporaires) si la description ne contient pas le format exact
+                if badge in ["Aucun", "", "V"] and nom_key in map_badges_bdd:
                     badge = map_badges_bdd[nom_key]
 
                 presents_dict[nom_key] = {
