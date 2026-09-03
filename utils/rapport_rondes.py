@@ -114,7 +114,18 @@ def generer_et_envoyer_rapport_nuit_tous_sites():
             if ref_cle in rondes_realisees:
                 nb_ok += 1
                 ev = rondes_realisees[ref_cle]
-                heure_f = ev.get("horodatage", "")[11:16]
+
+                # Conversion UTC -> Nouméa (UTC+11)
+                raw_iso = ev.get("horodatage", "")
+                try:
+                    dt_utc = datetime.datetime.fromisoformat(
+                        raw_iso.replace("Z", "+00:00")
+                    )
+                    dt_nc = dt_utc.astimezone(TZ_NC)
+                    heure_f = dt_nc.strftime("%H:%M")
+                except Exception:
+                    heure_f = raw_iso[11:16] if len(raw_iso) >= 16 else "N/A"
+
                 agent_f = ev.get("agent_nom", "Agent")
                 lignes_html += f"""
                 <tr style="background-color: #e8f5e9;">
