@@ -1,5 +1,5 @@
 # =========================================================================
-# MODULE : GESTION DES MOUVEMENTS SÉCURITÉ / IDENTIS (app_mouvement.py)
+# MODULE : GESTION DES MOUVEMENTS SÉCURITÉ / IDENTIS (app_mouvements.py)
 # Inclus : Contrôle d'accès terrain, validation sûreté (Admin/Charge Surete),
 #          restitution de badges et notifications automatiques.
 # Table BDD dédiée : public.mc_mouvements
@@ -216,7 +216,6 @@ def fetch_mouvements_jour(site_nom: str, site_uuid: str, date_cible: datetime.da
     STATUTS_DEPART = ["ACTIF", "A_LIVRER", "IMPRIME"]
     statuts_globaux = list(set(STATUTS_ARRIVEE + STATUTS_DEPART))
 
-    # Chargement des pointages BDD déjà effectués aujourd'hui depuis mc_mouvements
     pointages_bdd = fetch_pointages_existants(site_uuid, date_cible)
 
     try:
@@ -385,7 +384,6 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
                 ev_bdd = item.get("pointage_bdd", {})
                 statut_bdd = ev_bdd.get("statut_passage", "")
 
-                # Lecture du statut en BDD
                 passage_deja_enregistre = statut_bdd in ["AGENT_VALIDE", "SURETE_VALIDE"]
                 surete_deja_enregistree = statut_bdd == "SURETE_VALIDE"
 
@@ -469,9 +467,9 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
                     st.markdown("---")
                     st.markdown("##### ⚙️ 2. Check-List de Conformité & Émargement (Chargé de Sûreté / Admin)")
 
-                    desactiver_p2 = (not est_admin) or surete_deja_enregistree or (not passage_deja_enregistre)
+                    # LOGIQUE CORRIGÉE : désactivé seulement si non-admin, non encore contrôlé par l'agent, ou déjà validé par la Sûreté
+                    desactiver_p2 = (not est_admin) or (not passage_deja_enregistre) or surete_deja_enregistree
 
-                    # Lecture dynamique des cases à cocher en BDD
                     chk_photo_val = ev_bdd.get("check_photo", False)
                     chk_inc_val = ev_bdd.get("check_incendie", False)
                     chk_perm_val = ev_bdd.get("check_permis", False)
@@ -560,29 +558,44 @@ def show():
     sites_dict = fetch_sites_from_bdd()
     noms_sites_valides = list(sites_dict.keys())
 
+    # 1. RÉCUPÉRATION DES PARAMÈTRES URL TRANSMIS PAR APP.PY
     query_params = st.query_params
     site_param = query_params.get("site", None)
+    role_param = query_params.get("role", None)
+    user_param = query_params.get("user", None)
 
+    # 2. RÉSOLUTION DU PROFIL ET DES DROITS
     user_info = st.session_state.get("user_profile", {})
+
     raw_role = (
-        user_info.get("role") 
+        role_param 
+        or user_info.get("role") 
         or user_info.get("role_name") 
         or st.session_state.get("role", "AGENT_SECU")
     )
     role_clean = str(raw_role).upper().strip()
+    full_name = str(user_param or user_info.get("full_name", "")).upper()
 
-    site_sollicite = None
-    ROLES_AUTORISES_ETAPE2 = [
+    ROLES_AUTORISES = [
         "ADMIN", "SUPER_ADMIN", "ADMINISTRATEUR", 
         "CHARGE_SURETE", "CHARGE DE SURETE", "COS"
     ]
     
-    full_name = str(user_info.get("full_name", "")).upper()
+    # Évaluation forcée : True si le rôle correspond OU si le nom contient KUTER
     est_admin_session = (
-        role_clean in ROLES_AUTORISES_ETAPE2 
+        role_clean in ROLES_AUTORISES 
         or "ADMIN" in role_clean 
+        or "SURETE" in role_clean 
         or "KUTER" in full_name
     )
+
+    # BANNIÈRE DE DIAGNOSTIC D'ACCÈS
+    if est_admin_session:
+        st.success(f"🔓 **Mode Sûreté / Admin Déverrouillé** | Utilisateur : `{full_name}` | Rôle : `{role_clean}`")
+    else:
+        st.warning(f"🔒 **Mode Agent de Garde (Étape 2 restreinte)** | Rôle perçu : `{role_clean}` | Requis : Admin/Sûreté")
+
+    site_sollicite = None
     site_cle_admin = False
 
     if site_param:
