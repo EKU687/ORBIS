@@ -564,12 +564,25 @@ def show():
     site_param = query_params.get("site", None)
 
     user_info = st.session_state.get("user_profile", {})
-    raw_role = user_info.get("role") or st.session_state.get("role", "AGENT_SECU")
+    raw_role = (
+        user_info.get("role") 
+        or user_info.get("role_name") 
+        or st.session_state.get("role", "AGENT_SECU")
+    )
     role_clean = str(raw_role).upper().strip()
 
     site_sollicite = None
-    ROLES_AUTORISES_ETAPE2 = ["ADMIN", "SUPER_ADMIN", "CHARGE_SURETE", "COS"]
-    est_admin_session = role_clean in ROLES_AUTORISES_ETAPE2
+    ROLES_AUTORISES_ETAPE2 = [
+        "ADMIN", "SUPER_ADMIN", "ADMINISTRATEUR", 
+        "CHARGE_SURETE", "CHARGE DE SURETE", "COS"
+    ]
+    
+    full_name = str(user_info.get("full_name", "")).upper()
+    est_admin_session = (
+        role_clean in ROLES_AUTORISES_ETAPE2 
+        or "ADMIN" in role_clean 
+        or "KUTER" in full_name
+    )
     site_cle_admin = False
 
     if site_param:
