@@ -49,9 +49,9 @@ query_params = st.query_params
 view_param = query_params.get("view", None)
 
 if view_param == "mouvements":
-    from views import app_mouvements
+    from views import app_mouvement
 
-    app_mouvements.show()
+    app_mouvement.show()
     st.stop()  # Stoppe le script ici pour la console dédiée d'entrées/sorties
 
 # =========================================================================
@@ -263,9 +263,12 @@ module_actif = menu_options[selection_label]
 # 7.1. ACCÈS DIRECT AU MONITEUR DES MOUVEMENTS (DEUXIÈME ONGLET / ÉCRAN)
 # =========================================================================
 st.sidebar.markdown("---")
+
+# Transmission explicite des droits via l'URL pour la session dédiée
+nom_user_encoded = str(user.get("full_name", "")).replace(" ", "%20")
 st.sidebar.link_button(
     "🚪 Moniteur Mouvements (Onglet Dédié)",
-    url=f"?site={site_selected}&view=mouvements",
+    url=f"?site={site_selected}&role={role_actif}&user={nom_user_encoded}&view=mouvements",
     use_container_width=True,
     help="Ouvre la console des flux d'entrées/sorties en continu dans un nouvel onglet.",
 )
