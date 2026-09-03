@@ -1,7 +1,8 @@
 # =========================================================================
 # MODULE : ENREGISTREMENT VISITEUR IMPRÉVU (views/visiteur_imprevu.py)
 # Inclus : Demandes spontanées, validation de l'hôte référent,
-#          et Mode Livraison Quai / Sans Badge physique.
+#          Mode Livraison Quai / Sans Badge physique, et enregistrement
+#          unifié dans la table Supabase badges_temporaires.
 # =========================================================================
 import datetime
 from pathlib import Path
@@ -72,7 +73,24 @@ def fetch_hotes_referents_list() -> list[str]:
     return ["Sélectionner un hôte / agent référent..."] + hotes_tries
 
 
+def fetch_badges_occupes_bdd(site_id: str) -> list[str]:
+    """Récupère les numéros de badges temporaires/visiteurs actuellement en cours d'utilisation sur le site."""
+    try:
+        res = (
+            supabase.table("badges_temporaires")
+            .select("num_badge")
+            .eq("site_id", str(site_id))
+            .eq("statut", "EN_COURS")
+            .execute()
+        )
+        return [r["num_badge"] for r in (res.data or []) if r.get("num_badge")]
+    except Exception as e:
+        print(f"Note lecture badges occupés : {e}")
+        return []
+
+
 def get_or_create_vacation_id(site_id: str, agent_nom: str) -> str:
+    """Récupère ou génère un UUID de vacation actif pour l'agent et le site."""
     if st.session_state.get("vacation_id"):
         return st.session_state["vacation_id"]
 
@@ -114,7 +132,7 @@ def show():
 
     site_actuel = st.session_state.get("site_actif", "DINUM")
     user_info = st.session_state.get("user_profile", {"full_name": "Éric KUTER"})
-    agent_connecte = user_info["full_name"]
+    agent_connecte = user_info.get("full_name", "Éric KUTER")
 
     if "visiteurs_presents" not in st.session_state:
         st.session_state["visiteurs_presents"] = {}
@@ -123,19 +141,21 @@ def show():
 
     vac_id = get_or_create_vacation_id(site_actuel, agent_connecte)
 
-    # FILTRE DES BADGES DISPONIBLES (ANTI-DOUBLON GLOBAL)
-    badges_occupes = [
+    # 1. FILTRE DES BADGES DISPONIBLES (BDD Supabase + Mémoire Session)
+    badges_occupes_bdd = fetch_badges_occupes_bdd(site_actuel)
+    badges_occupes_session = [
         info["badge"] for info in st.session_state["visiteurs_presents"].values()
     ]
-    tous_badges = [f"V.{i:03d}" for i in range(1, 31)]
+    badges_occupes = list(set(badges_occupes_bdd + badges_occupes_session))
 
-    # 🎯 INTÉGRATION NATIVE DU MODE LIVRAISON SANS BADGE
+    tous_badges_v = [f"V.{i:03d}" for i in range(1, 31)]
+
     badges_disponibles = (
         ["Sélectionner un badge...", "📦 LIVRAISON (Sans badge)"]
-        + [b for b in tous_badges if b not in badges_occupes]
+        + [b for b in tous_badges_v if b not in badges_occupes]
     )
 
-    # Charger la liste dynamique des hôtes référents depuis la BDD
+    # Charger la liste dynamique des hôtes référents
     liste_hotes = fetch_hotes_referents_list()
 
     with st.form("form_visiteur_imprevu", clear_on_submit=True):
@@ -201,6 +221,7 @@ def show():
             agent_referent = agent_referent_sel
             key_visiteur = f"{nom_visiteur.upper()}_{agent_referent.upper()}_IMP"
 
+            # CASE 1 : ACCÈS REFUSÉ
             if accord_hote == "❌ REFUSÉ":
                 payload_mc = {
                     "reference": f"REF-VIS-REFUSE-{ref_time}",
@@ -225,11 +246,13 @@ def show():
                 except Exception as e:
                     st.error(f"Erreur enregistrement MC : {e}")
 
+            # CASE 2 : ACCÈS ACCEPTÉ
             elif accord_hote == "✅ ACCEPTÉ":
                 est_livraison = (badge_sel == "📦 LIVRAISON (Sans badge)")
                 badge_final = "LIVRAISON" if est_livraison else badge_sel
                 ref_prefix = "REF-VIS-IMP-LIV-IN" if est_livraison else "REF-VIS-IMP-IN"
 
+                # Mise à jour mémoire locale Streamlit
                 st.session_state["visiteurs_presents"][key_visiteur] = {
                     "badge": badge_final,
                     "nom": nom_visiteur.upper(),
@@ -245,6 +268,25 @@ def show():
                     "heure_arrivee": now_nc.strftime("%H:%M"),
                 })
 
+                # 🎯 PERSISTANCE CRITIQUE BDD : ENREGISTREMENT DANS badges_temporaires
+                payload_badge = {
+                    "site_id": site_actuel,
+                    "num_badge": badge_final,
+                    "nom_porteur": nom_visiteur.upper(),
+                    "type_porteur": "VISITEUR_IMPREVU",
+                    "organisme": organisme or "N/A",
+                    "hote_referent": agent_referent,
+                    "statut": "EN_COURS",
+                    "heure_attribution": now_iso,
+                }
+                try:
+                    supabase.table("badges_temporaires").upsert(
+                        payload_badge, on_conflict="site_id,num_badge"
+                    ).execute()
+                except Exception as err_b:
+                    print(f"⚠️ Note enregistrement BDD badges_temporaires : {err_b}")
+
+                # Journalisation dans la Main Courante (mc_evenements)
                 desc_log = (
                     f"📦 Livraison Imprévue / Quai : {nom_visiteur.upper()} ({organisme or 'Transporteur'}) pour {agent_referent} (Badge LIVRAISON)."
                     if est_livraison
@@ -270,8 +312,13 @@ def show():
                 try:
                     supabase.table("mc_evenements").insert(payload_mc).execute()
                     st.toast(
-                        f"Mouvement enregistrée pour {nom_visiteur} (Mode: {badge_final}) !",
+                        f"Visiteur enregistré ! Badge **{badge_final}** affecté à **{nom_visiteur.upper()}**.",
                         icon="✅",
                     )
+                    st.success(f"🎉 Entrée validée pour **{nom_visiteur.upper()}** (Badge : `{badge_final}`).")
                 except Exception as e:
                     st.error(f"Erreur enregistrement MC : {e}")
+
+
+if __name__ == "__main__":
+    show()
