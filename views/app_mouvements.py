@@ -139,14 +139,14 @@ def fetch_pointages_existants(site_uuid: str, date_cible: datetime.date) -> dict
         res = (
             supabase.table("mc_evenements")
             .select("*")
-            .eq("site_id", site_uuid)
+            .eq("site_id", str(site_uuid))
             .eq("type_evenement", "MOUVEMENT_ENTREE")
             .gte("horodatage", f"{date_cible.isoformat()}T00:00:00")
             .lte("horodatage", f"{date_cible.isoformat()}T23:59:59")
             .execute()
         )
         for row in (res.data or []):
-            ref_id = row.get("reference")
+            ref_id = row.get("reference", "").replace("MVT-ENTREE-", "")
             if ref_id:
                 pointages[ref_id] = row
     except Exception as e:
@@ -154,22 +154,30 @@ def fetch_pointages_existants(site_uuid: str, date_cible: datetime.date) -> dict
     return pointages
 
 
-def enregistrer_pointage_agent_bdd(site_uuid: str, item_id: str, nom_personne: str, type_piece: str, num_piece: str, agent_nom: str):
-    """Enregistre le passage au poste de garde directement dans Supabase."""
+def enregistrer_pointage_agent_bdd(
+    site_uuid: str,
+    item_id: str,
+    nom_personne: str,
+    type_piece: str,
+    num_piece: str,
+    agent_nom: str
+):
+    """Enregistre le passage au poste de garde dans mc_evenements (conforme au schéma BDD)."""
     now_iso = get_now_nc().isoformat()
+    desc_complete = f"[AGENT] Piece: {type_piece} | N°: {num_piece} | Personne: {nom_personne}"
+    
+    # Génération d'un UUID unique pour vacation_id afin d'honorer la contrainte NOT NULL
+    v_id = str(uuid.uuid4())
+    
     data = {
-        "site_id": site_uuid,
-        "reference": str(item_id),
-        "type_evenement": "MOUVEMENT_ENTREE",
-        "description": f"Contrôle pièce {type_piece} N°{num_piece} pour {nom_personne}",
+        "reference": f"MVT-ENTREE-{item_id}",
+        "site_id": str(site_uuid),
+        "vacation_id": v_id,
         "agent_nom": agent_nom,
+        "type_evenement": "MOUVEMENT_ENTREE",
+        "description": desc_complete,
         "horodatage": now_iso,
-        "statut_validation": "AGENT_VALIDE",
-        "details_json": {
-            "type_piece": type_piece,
-            "num_piece": num_piece,
-            "passage_agent_timestamp": now_iso
-        }
+        "notified_authority": False,
     }
     try:
         supabase.table("mc_evenements").upsert(data, on_conflict="reference").execute()
@@ -182,15 +190,17 @@ def enregistrer_pointage_agent_bdd(site_uuid: str, item_id: str, nom_personne: s
 def enregistrer_emargement_surete_bdd(item_id: str, check_data: dict, admin_nom: str):
     """Enregistre la validation finale par la Sûreté dans Supabase."""
     try:
-        res = supabase.table("mc_evenements").select("details_json").eq("reference", str(item_id)).execute()
-        existing_json = res.data[0].get("details_json", {}) if res.data else {}
-        existing_json["check_list"] = check_data
-        existing_json["surete_validation_timestamp"] = get_now_nc().isoformat()
+        ref_cle = f"MVT-ENTREE-{item_id}"
+        res = supabase.table("mc_evenements").select("description").eq("reference", ref_cle).execute()
+        desc_actuelle = res.data[0].get("description", "") if res.data else ""
+        
+        tampon_surete = f" | [SÛRETÉ] Valide par {admin_nom} (Checks: {check_data})"
+        nouvelle_desc = f"{desc_actuelle}{tampon_surete}"
 
         supabase.table("mc_evenements").update({
-            "statut_validation": "SURETE_VALIDE",
-            "details_json": existing_json
-        }).eq("reference", str(item_id)).execute()
+            "description": nouvelle_desc,
+            "notified_authority": True
+        }).eq("reference", ref_cle).execute()
         return True
     except Exception as e:
         st.error(f"Erreur lors de la validation Sûreté BDD : {e}")
@@ -260,7 +270,7 @@ def fetch_mouvements_jour(site_nom: str, site_uuid: str, date_cible: datetime.da
                             "niveau_hab": ag.get("niveau_habilitation", "Niveau 1"),
                             "service_str": ag.get("service") or ag.get("direction") or "Agent Public",
                             "source": "Agents_Publics",
-                            "pointage_bdd": ev_bdd, # Statut BDD injecté
+                            "pointage_bdd": ev_bdd,
                         })
 
                     if (ag.get("date_fin_validite") == date_str) and (ag_statut in STATUTS_DEPART):
@@ -307,7 +317,7 @@ def fetch_mouvements_jour(site_nom: str, site_uuid: str, date_cible: datetime.da
                             "niveau_hab": pr.get("niveau_habilitation", "Niveau 1"),
                             "service_str": pr.get("societe") or "Prestataire Externe",
                             "source": "Prestataires",
-                            "pointage_bdd": ev_bdd, # Statut BDD injecté
+                            "pointage_bdd": ev_bdd,
                         })
 
                     if (pr.get("date_fin_prestation") == date_str) and (pr_statut in STATUTS_DEPART):
@@ -377,12 +387,11 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
         if liste_arrivants:
             for item in liste_arrivants:
                 ev_bdd = item.get("pointage_bdd", {})
-                statut_bdd = ev_bdd.get("statut_validation", "")
-                details_json = ev_bdd.get("details_json", {})
+                desc_bdd = ev_bdd.get("description", "")
 
-                # Vérification permanente basée sur la BDD Supabase
-                passage_deja_enregistre = statut_bdd in ["AGENT_VALIDE", "SURETE_VALIDE"]
-                surete_deja_enregistree = statut_bdd == "SURETE_VALIDE"
+                # Analyse des tampons dans la description
+                passage_deja_enregistre = "[AGENT]" in desc_bdd
+                surete_deja_enregistree = "[SÛRETÉ]" in desc_bdd
 
                 titre_accordeon = f"👤 {item['nom']} — {item['type']} ({item['organisme']}) | Service: {item.get('service_str', 'Non défini')}"
                 if surete_deja_enregistree:
@@ -403,8 +412,15 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
                     st.markdown("##### 🛂 1. Contrôle d'Identité (Agent de Garde)")
                     f_col1, f_col2 = st.columns(2)
 
-                    val_type_piece = details_json.get("type_piece", "Carte Nationale d'Identité")
-                    val_num_piece = details_json.get("num_piece", "")
+                    # Extraction dynamique des valeurs si déjà saisies dans description
+                    val_type_piece = "Carte Nationale d'Identité"
+                    val_num_piece = ""
+                    if passage_deja_enregistre and "Piece:" in desc_bdd:
+                        try:
+                            val_type_piece = desc_bdd.split("Piece:")[1].split("|")[0].strip()
+                            val_num_piece = desc_bdd.split("N°:")[1].split("|")[0].strip()
+                        except Exception:
+                            pass
 
                     with f_col1:
                         type_piece = st.selectbox(
@@ -447,7 +463,6 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
                             now_dt = get_now_nc()
                             heure_passage = now_dt.strftime("%H:%M")
 
-                            # Sauvegarde immédiate dans Supabase
                             if enregistrer_pointage_agent_bdd(site_uuid, item["id"], item["nom"], type_piece, num_piece.strip(), agent_connecte):
                                 notifier_surete_passage(
                                     site=site_actuel,
