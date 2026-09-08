@@ -57,7 +57,22 @@ def fetch_orbis_visiteurs_presents(site_id: str) -> list[dict]:
             .eq("statut", "EN_COURS")
             .execute()
         )
-        return res.data or []
+        raw_data = res.data or []
+        
+        # 🎯 FILTRAGE SÉCURITÉ : Élimination des lignes anonymes ou sans nom
+        clean_visiteurs = []
+        for vis in raw_data:
+            nom_test = (
+                vis.get("nom_porteur")
+                or vis.get("nom_agent")
+                or vis.get("nom_complet")
+                or vis.get("nom")
+                or ""
+            )
+            if str(nom_test).strip() and str(nom_test).strip().upper() != "INCONNU":
+                clean_visiteurs.append(vis)
+
+        return clean_visiteurs
     except Exception as e:
         st.error(f"⚠️ Erreur chargement Visiteurs ORBIS : {e}")
         return []
@@ -154,14 +169,29 @@ def show():
             "Ordre_Tri": ordre_tri,
         })
 
-    # Formatage des visiteurs ORBIS
+    # Formatage des visiteurs ORBIS (Exclusion des badges T pour éviter le double comptage avec AEOS)
     for vis in data_visiteurs:
-        bdg = vis.get("num_badge", "Sans Badge")
+        bdg = str(vis.get("num_badge", "Sans Badge")).strip().upper()
+        type_badge = str(vis.get("type_badge", "")).strip().upper()
+
+        # 🚫 RÈGLE DE SÛRETÉ : Si c'est un Badge Agent (T), AEOS le compte déjà à l'entrée !
+        is_badge_agent = bdg.startswith("T") or "AGENT" in type_badge or "TEMPORAIRE" in type_badge
+        if is_badge_agent:
+            continue
+
         cat = "📦 LIVRAISON" if bdg == "LIVRAISON" else ("📦 DÉPÔT MATÉRIEL" if bdg == "DEPOT_MATERIEL" else "✍️ VISITEUR")
+
+        nom_aff = (
+            vis.get("nom_porteur")
+            or vis.get("nom_agent")
+            or vis.get("nom_complet")
+            or vis.get("nom")
+            or "Visiteur"
+        ).strip().upper()
 
         liste_globale.append({
             "Source": "✍️ ORBIS V3",
-            "Nom & Prénom": vis.get("nom_porteur", "Inconnu"),
+            "Nom & Prénom": nom_aff,
             "Service / Société": vis.get("organisme", "Extérieur"),
             "Catégorie": cat,
             "Badge / Mode": bdg,
