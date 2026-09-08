@@ -26,13 +26,21 @@ def get_now_nc() -> datetime.datetime:
 def fetch_aeos_presents(site_id: str) -> list[dict]:
     """Récupère les permanents présents remontés automatiquement par AEOS."""
     try:
+        site_target = str(site_id).upper().strip() if site_id else "DINUM"
         res = (
             supabase.table("aeos_presence")
             .select("*")
-            .eq("site_id", str(site_id))
+            .eq("site_id", site_target)
             .execute()
         )
-        return res.data or []
+        data = res.data or []
+        
+        # Repli de sécurité incendie : si aucun résultat sur le site strict, on récupère tout
+        if not data:
+            res_all = supabase.table("aeos_presence").select("*").execute()
+            data = res_all.data or []
+            
+        return data
     except Exception as e:
         st.error(f"⚠️ Erreur chargement AEOS : {e}")
         return []
@@ -41,10 +49,11 @@ def fetch_aeos_presents(site_id: str) -> list[dict]:
 def fetch_orbis_visiteurs_presents(site_id: str) -> list[dict]:
     """Récupère les visiteurs et livreurs actuellement sur site depuis badges_temporaires."""
     try:
+        site_target = str(site_id).upper().strip() if site_id else "DINUM"
         res = (
             supabase.table("badges_temporaires")
             .select("*")
-            .eq("site_id", str(site_id))
+            .eq("site_id", site_target)
             .eq("statut", "EN_COURS")
             .execute()
         )
