@@ -243,7 +243,7 @@ if role_actif in ROLES_REGISTRE:
 menu_options.update({
     "✍️ Visiteur Imprévu": "visiteur_imprevu",
     "👥 Visiteurs Attendus": "visiteurs_attendus",
-    "👥 Présences sur site": "evacuation_incendie",  # 🎯 REINTEGRÉ DANS LE MENU RADIO
+    "🏢 Présences sur site": "evacuation_incendie",  # 🎯 REINTEGRÉ DANS LE MENU RADIO
     "🔦 Suivi des Rondes": "suivi_rondes",
     "⚠️ Anomalies & Vigilance": "anomalies",
     label_badges: "badges",
