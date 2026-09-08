@@ -19,7 +19,7 @@ from config import APP_AUTHOR, APP_DATE, APP_ENV, APP_NAME, APP_VERSION, APP_SUB
 TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
 
 # Ping automatique toutes les 3 minutes (180 000 ms) pour maintenir la session
-st_autorefresh(interval=180 * 1000, key="keep_alive_main_courante")
+st_autorefresh(interval=60 * 1000, key="keep_alive_main_courante")
 
 
 def get_now_nc() -> datetime.datetime:
