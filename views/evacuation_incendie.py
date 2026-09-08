@@ -1,7 +1,7 @@
 # =========================================================================
 # MODULE : REGISTRE D'ÉVACUATION & RASSEMBLEMENT (views/evacuation_incendie.py)
-# Inclus : Consolidation AEOS + Visiteurs ORBIS V3, Pointage interactif,
-#          Filtres par service/type, et Mode Appel d'Urgence.
+# Inclus : Consolidation AEOS + Visiteurs ORBIS V3, Tri hiérarchisé,
+#          Pointage séparé (Employés / Prestataires / Visiteurs).
 # =========================================================================
 import datetime
 from pathlib import Path
@@ -35,7 +35,7 @@ def fetch_aeos_presents(site_id: str) -> list[dict]:
         )
         data = res.data or []
         
-        # Repli de sécurité incendie : si aucun résultat sur le site strict, on récupère tout
+        # Repli de sécurité : si aucun résultat sur le site strict, on récupère tout
         if not data:
             res_all = supabase.table("aeos_presence").select("*").execute()
             data = res_all.data or []
@@ -63,101 +63,30 @@ def fetch_orbis_visiteurs_presents(site_id: str) -> list[dict]:
         return []
 
 
-def show():
-    st.title("🚨 Registre de Présence & Évacuation Incendie")
-    st.caption("Console de crise et d'appel au point de rassemblement (Consolidation AEOS + ORBIS V3).")
-
-    site_actuel = st.session_state.get("site_actif", "DINUM")
-    now_nc = get_now_nc()
-
-    # Bouton de rafraîchissement
-    c_title1, c_title2 = st.columns([3, 1])
-    with c_title2:
-        if st.button("🔄 Actualiser la liste", use_container_width=True):
-            st.rerun()
-
-    # 1. Chargement des données Supabase
-    data_aeos = fetch_aeos_presents(site_actuel)
-    data_visiteurs = fetch_orbis_visiteurs_presents(site_actuel)
-
-    total_aeos = len(data_aeos)
-    total_visiteurs = len(data_visiteurs)
-    total_general = total_aeos + total_visiteurs
-
-    # 2. Métriques en en-tête
-    m1, m2, m3 = st.columns(3)
-    m1.metric("🚨 Total Général sur Site", f"{total_general} pers.")
-    m2.metric("🏢 Permanents (AEOS)", f"{total_aeos} pers.")
-    m3.metric("✍️ Visiteurs / Livreurs (ORBIS)", f"{total_visiteurs} pers.")
-
-    st.markdown("---")
-
-    # 3. Consolidation dans un DataFrame unifié
-    liste_globale = []
-
-    # Formatage des permanents AEOS
-    for item in data_aeos:
-        nom_aff = f"{item.get('nom', '')} {item.get('prenom', '')}".strip()
-        if not nom_aff:
-            nom_aff = item.get("nom_complet", "Inconnu")
-
-        liste_globale.append({
-            "Source": "🏢 AEOS",
-            "Nom & Prénom": nom_aff,
-            "Service / Société": item.get("service", "DINUM"),
-            "Catégorie": item.get("type_personne", "Employé"),
-            "Badge / Mode": "Carte Permanente",
-            "Zone": item.get("zone_acces", "Zone sur site"),
-        })
-
-    # Formatage des visiteurs ORBIS
-    for vis in data_visiteurs:
-        bdg = vis.get("num_badge", "Sans Badge")
-        cat = "📦 LIVRAISON" if bdg == "LIVRAISON" else ("📦 DÉPÔT MATÉRIEL" if bdg == "DEPOT_MATERIEL" else "✍️ VISITEUR")
-
-        liste_globale.append({
-            "Source": "✍️ ORBIS V3",
-            "Nom & Prénom": vis.get("nom_porteur", "Inconnu"),
-            "Service / Société": vis.get("organisme", "Extérieur"),
-            "Catégorie": cat,
-            "Badge / Mode": bdg,
-            "Zone": f"Hôte: {vis.get('hote_referent', 'Non précisé')}",
-        })
-
-    if not liste_globale:
-        st.info("ℹ️ Aucune personne recensée actuellement sur le site.")
+def afficher_tableau_pointage(df_data: pd.DataFrame, key_suffix: str):
+    """Affiche un tableau interactif Streamlit avec case de pointage et progression."""
+    if df_data.empty:
+        st.info("ℹ️ Personne recensée dans cette catégorie.")
         return
 
-    df_presents = pd.DataFrame(liste_globale)
+    df_display = df_data.copy()
+    if "Présent au Rassemblement" not in df_display.columns:
+        df_display.insert(0, "Présent au Rassemblement", False)
 
-    # 4. Filtres de recherche
-    f1, f2 = st.columns([2, 2])
-    with f1:
-        filtre_source = st.multiselect(
-            "Filtrer par Source :",
-            options=["🏢 AEOS", "✍️ ORBIS V3"],
-            default=["🏢 AEOS", "✍️ ORBIS V3"]
-        )
-    with f2:
-        recherche_nom = st.text_input("🔍 Rechercher une personne ou un service :", placeholder="Ex: KUTER ou SIN")
-
-    # Application des filtres
-    df_filtered = df_presents[df_presents["Source"].isin(filtre_source)].copy()
-
-    if recherche_nom.strip():
-        term = recherche_nom.strip().upper()
-        df_filtered = df_filtered[
-            df_filtered["Nom & Prénom"].str.upper().str.contains(term)
-            | df_filtered["Service / Société"].str.upper().str.contains(term)
-        ]
-
-    st.markdown(f"### 📋 Liste de Pointage ({len(df_filtered)} / {total_general} personnes affichées)")
-
-    # 5. Tableau d'affichage dynamique avec case de pointage
-    df_filtered.insert(0, "Présent au Rassemblement", False)
+    # Ordre des colonnes masquant la colonne technique 'Ordre_Tri'
+    cols_to_show = [
+        "Présent au Rassemblement",
+        "Source",
+        "Nom & Prénom",
+        "Service / Société",
+        "Catégorie",
+        "Badge / Mode",
+        "Zone",
+    ]
+    df_display = df_display[cols_to_show]
 
     edited_df = st.data_editor(
-        df_filtered,
+        df_display,
         column_config={
             "Présent au Rassemblement": st.column_config.CheckboxColumn(
                 "Pointage 🟢",
@@ -173,12 +102,138 @@ def show():
         disabled=["Source", "Nom & Prénom", "Service / Société", "Catégorie", "Badge / Mode", "Zone"],
         hide_index=True,
         use_container_width=True,
+        key=f"editor_{key_suffix}",
     )
 
-    # Compteur de pointage en direct
     nb_pointes = edited_df["Présent au Rassemblement"].sum()
-    st.progress(nb_pointes / len(edited_df) if len(edited_df) > 0 else 0)
-    st.caption(f"Status Pointage : **{nb_pointes}** personnes localisées au point de rassemblement sur **{len(edited_df)}**.")
+    total_cat = len(edited_df)
+    ratio = nb_pointes / total_cat if total_cat > 0 else 0
+    st.progress(ratio)
+    st.caption(f"Status Pointage : **{nb_pointes} / {total_cat}** personnes localisées.")
+
+
+def show():
+    st.title("🚨 Registre de Présence & Évacuation Incendie")
+    st.caption("Console de crise et d'appel au point de rassemblement (Consolidation AEOS + ORBIS V3).")
+
+    site_actuel = st.session_state.get("site_actif", "DINUM")
+
+    # Bouton de rafraîchissement
+    c_title1, c_title2 = st.columns([3, 1])
+    with c_title2:
+        if st.button("🔄 Actualiser la liste", use_container_width=True):
+            st.rerun()
+
+    # 1. Chargement des données Supabase
+    data_aeos = fetch_aeos_presents(site_actuel)
+    data_visiteurs = fetch_orbis_visiteurs_presents(site_actuel)
+
+    # 2. Consolidation dans un DataFrame unifié
+    liste_globale = []
+
+    # Formatage des permanents AEOS
+    for item in data_aeos:
+        nom_aff = f"{item.get('nom', '')} {item.get('prenom', '')}".strip()
+        if not nom_aff:
+            nom_aff = item.get("nom_complet", "Inconnu")
+
+        raw_type = str(item.get("type_personne", "Employé")).strip()
+        is_presta = "PRESTA" in raw_type.upper()
+        
+        # Tri : 1=Employé, 2=Prestataire AEOS
+        ordre_tri = 2 if is_presta else 1
+        cat_lib = "Prestataire" if is_presta else "Employé"
+
+        liste_globale.append({
+            "Source": "🏢 AEOS",
+            "Nom & Prénom": nom_aff,
+            "Service / Société": item.get("service", "DINUM"),
+            "Catégorie": cat_lib,
+            "Badge / Mode": "Carte Permanente",
+            "Zone": item.get("zone_acces", "Zone sur site"),
+            "Ordre_Tri": ordre_tri,
+        })
+
+    # Formatage des visiteurs ORBIS
+    for vis in data_visiteurs:
+        bdg = vis.get("num_badge", "Sans Badge")
+        cat = "📦 LIVRAISON" if bdg == "LIVRAISON" else ("📦 DÉPÔT MATÉRIEL" if bdg == "DEPOT_MATERIEL" else "✍️ VISITEUR")
+
+        liste_globale.append({
+            "Source": "✍️ ORBIS V3",
+            "Nom & Prénom": vis.get("nom_porteur", "Inconnu"),
+            "Service / Société": vis.get("organisme", "Extérieur"),
+            "Catégorie": cat,
+            "Badge / Mode": bdg,
+            "Zone": f"Hôte: {vis.get('hote_referent', 'Non précisé')}",
+            "Ordre_Tri": 3, # 3=Visiteurs / Livreurs
+        })
+
+    if not liste_globale:
+        st.info("ℹ️ Aucune personne recensée actuellement sur le site.")
+        return
+
+    df_presents = pd.DataFrame(liste_globale)
+
+    # 🎯 TRI HIERARCHIQUE : PAR TYPE (Employés -> Prestataires -> Visiteurs) PUIS PAR NOM
+    df_presents.sort_values(by=["Ordre_Tri", "Nom & Prénom"], ascending=[True, True], inplace=True)
+
+    # Décompte par sous-groupes
+    df_employes = df_presents[df_presents["Ordre_Tri"] == 1]
+    df_prestataires = df_presents[df_presents["Ordre_Tri"] == 2]
+    df_visiteurs = df_presents[df_presents["Ordre_Tri"] == 3]
+
+    cnt_emp = len(df_employes)
+    cnt_presta = len(df_prestataires)
+    cnt_vis = len(df_visiteurs)
+    total_general = len(df_presents)
+
+    # 3. Métriques synthétiques
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("🚨 Total sur Site", f"{total_general} pers.")
+    m2.metric("👔 Employés (Public)", f"{cnt_emp} pers.")
+    m3.metric("🛠️ Prestataires", f"{cnt_presta} pers.")
+    m4.metric("✍️ Visiteurs / Livreurs", f"{cnt_vis} pers.")
+
+    st.markdown("---")
+
+    # 4. Filtre de recherche universel
+    recherche_nom = st.text_input("🔍 Rechercher une personne ou un service :", placeholder="Ex: KUTER ou SIN")
+
+    if recherche_nom.strip():
+        term = recherche_nom.strip().upper()
+        df_presents = df_presents[
+            df_presents["Nom & Prénom"].str.upper().str.contains(term)
+            | df_presents["Service / Société"].str.upper().str.contains(term)
+        ]
+        # Re-calcul des sous-groupes filtrés
+        df_employes = df_presents[df_presents["Ordre_Tri"] == 1]
+        df_prestataires = df_presents[df_presents["Ordre_Tri"] == 2]
+        df_visiteurs = df_presents[df_presents["Ordre_Tri"] == 3]
+
+    # 5. RUPTURE PAR ONGLETS DÉDIÉS + VUE CONSOLIDÉE
+    tab_globale, tab_emp, tab_presta, tab_vis = st.tabs([
+        f"📊 Liste Consolidée ({len(df_presents)})",
+        f"👔 Employés ({len(df_employes)})",
+        f"🛠️ Prestataires ({len(df_prestataires)})",
+        f"✍️ Visiteurs / Livreurs ({len(df_visiteurs)})",
+    ])
+
+    with tab_globale:
+        st.markdown("### 📋 Liste Générale Triée (Employés ➔ Prestataires ➔ Visiteurs)")
+        afficher_tableau_pointage(df_presents, "globale")
+
+    with tab_emp:
+        st.markdown("### 👔 Liste des Employés / Agents Publics")
+        afficher_tableau_pointage(df_employes, "employes")
+
+    with tab_presta:
+        st.markdown("### 🛠️ Liste des Prestataires")
+        afficher_tableau_pointage(df_prestataires, "prestataires")
+
+    with tab_vis:
+        st.markdown("### ✍️ Liste des Visiteurs & Livreurs")
+        afficher_tableau_pointage(df_visiteurs, "visiteurs")
 
 
 if __name__ == "__main__":
