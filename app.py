@@ -2,7 +2,7 @@
 # APPLICATION : MAIN COURANTE V3 - PC GARDE (ORBIS)
 # Inclus : Gestion SSO Portail HUB, Support YubiKey/Password via SDK,
 #          Moniteur Mouvements direct, Horodatage Pacific/Noumea (UTC+11),
-#          Déconnexion neutre (vacation maintenue) pour le terrain.
+#          Module Évacuation Incendie, Déconnexion neutre terrain.
 # =========================================================================
 import datetime
 from pathlib import Path
@@ -243,6 +243,7 @@ if role_actif in ROLES_REGISTRE:
 menu_options.update({
     "✍️ Visiteur Imprévu": "visiteur_imprevu",
     "👥 Visiteurs Attendus": "visiteurs_attendus",
+    "🚨 Évacuation Incendie": "evacuation_incendie",  # 🎯 NOUVEAU MODULE AJOUTÉ
     "🔦 Suivi des Rondes": "suivi_rondes",
     "⚠️ Anomalies & Vigilance": "anomalies",
     label_badges: "badges",
@@ -264,7 +265,6 @@ module_actif = menu_options[selection_label]
 # =========================================================================
 st.sidebar.markdown("---")
 
-# Transmission explicite des droits via l'URL pour la session dédiée
 nom_user_encoded = str(user.get("full_name", "")).replace(" ", "%20")
 st.sidebar.link_button(
     "🚪 Moniteur Mouvements (Onglet Dédié)",
@@ -304,6 +304,10 @@ elif module_actif == "visiteur_imprevu":
 elif module_actif == "visiteurs_attendus":
     from views import visiteurs_attendus
     visiteurs_attendus.show()
+
+elif module_actif == "evacuation_incendie":  # 🎯 ROUTAGE DU NOUVEAU MODULE
+    from views import evacuation_incendie
+    evacuation_incendie.show()
 
 elif module_actif == "suivi_rondes":
     from views import suivi_rondes
