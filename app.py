@@ -2,7 +2,7 @@
 # APPLICATION : MAIN COURANTE V3 - PC GARDE (ORBIS)
 # Inclus : Gestion SSO Portail HUB, Support YubiKey/Password via SDK,
 #          Moniteur Mouvements direct, Horodatage Pacific/Noumea (UTC+11),
-#          Module Évacuation Incendie, Déconnexion neutre terrain.
+#          🚨 Bouton d'Urgence Évacuation Incendie Rouge, Déconnexion neutre.
 # =========================================================================
 import datetime
 from pathlib import Path
@@ -230,8 +230,39 @@ else:
     label_badges = "🏷️ Badges Temporaires"
 
 # =========================================================================
-# 7. CONSTRUCTION DYNAMIQUE DU MENU DE NAVIGATION SELON LE RÔLE
+# 7. BOUTON D'URGENCE ROUGE & MENU DE NAVIGATION
 # =========================================================================
+
+# 🎨 Injection CSS pour le Bouton d'Urgence Rouge Flamboyant
+st.sidebar.markdown(
+    """
+    <style>
+    div[data-testid="stSidebar"] div.stButton > button[key="btn_urgence_incendie"] {
+        background-color: #d9534f !important;
+        color: white !important;
+        font-weight: bold !important;
+        border: 2px solid #c9302c !important;
+        box-shadow: 0 0 12px rgba(217, 83, 79, 0.6) !important;
+        font-size: 1.05rem !important;
+        border-radius: 8px !important;
+        padding: 10px !important;
+    }
+    div[data-testid="stSidebar"] div.stButton > button[key="btn_urgence_incendie"]:hover {
+        background-color: #c9302c !important;
+        border-color: #ac2925 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Bouton rouge d'accès direct
+if st.sidebar.button("🚨 ÉVACUATION INCENDIE", key="btn_urgence_incendie", use_container_width=True):
+    st.session_state["nav_module_force"] = "evacuation_incendie"
+
+st.sidebar.markdown("---")
+
+# Construction du dictionnaire du menu standard
 menu_options = {
     "📝 Main Courante": "main_courante",
 }
@@ -243,7 +274,6 @@ if role_actif in ROLES_REGISTRE:
 menu_options.update({
     "✍️ Visiteur Imprévu": "visiteur_imprevu",
     "👥 Visiteurs Attendus": "visiteurs_attendus",
-    "🚨 Évacuation Incendie": "evacuation_incendie",  # 🎯 NOUVEAU MODULE AJOUTÉ
     "🔦 Suivi des Rondes": "suivi_rondes",
     "⚠️ Anomalies & Vigilance": "anomalies",
     label_badges: "badges",
@@ -257,8 +287,12 @@ if role_actif in ROLES_ADMIN_ONLY:
 
 menu_options["🔍 Recherche Prestataires"] = "recherche_prestataires"
 
-selection_label = st.sidebar.radio("Navigation", list(menu_options.keys()))
-module_actif = menu_options[selection_label]
+# Gestion de l'état du module actif
+if "nav_module_force" in st.session_state:
+    module_actif = st.session_state.pop("nav_module_force")
+else:
+    selection_label = st.sidebar.radio("Navigation", list(menu_options.keys()))
+    module_actif = menu_options[selection_label]
 
 # =========================================================================
 # 7.1. ACCÈS DIRECT AU MONITEUR DES MOUVEMENTS (DEUXIÈME ONGLET / ÉCRAN)
@@ -305,7 +339,7 @@ elif module_actif == "visiteurs_attendus":
     from views import visiteurs_attendus
     visiteurs_attendus.show()
 
-elif module_actif == "evacuation_incendie":  # 🎯 ROUTAGE DU NOUVEAU MODULE
+elif module_actif == "evacuation_incendie":  # 🚨 MODULE D'URGENCE
     from views import evacuation_incendie
     evacuation_incendie.show()
 
