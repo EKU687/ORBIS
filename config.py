@@ -4,8 +4,8 @@
 # =========================================================================
 
 # 🎯 Semantic Versioning (SemVer) : MAJOR.MINOR.PATCH
-APP_VERSION = "3.0.0"
-APP_DATE = "02/09/2026"
+APP_VERSION = "3.0.1"
+APP_DATE = "08/09/2026"
 APP_ENV = "PRODUCTION"  # "BETA" ou "PRODUCTION"
 
 APP_NAME = "ORBIS - Main Courante V3"
