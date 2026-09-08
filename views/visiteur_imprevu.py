@@ -1,8 +1,8 @@
 # =========================================================================
 # MODULE : ENREGISTREMENT VISITEUR IMPRÉVU (views/visiteur_imprevu.py)
 # Inclus : Demandes spontanées, validation de l'hôte référent,
-#          Mode Livraison Quai / Sans Badge physique, et enregistrement
-#          unifié dans la table Supabase badges_temporaires.
+#          Modes Livraison Quai / Dépôt-Récup Matériel / Sans Badge physique,
+#          et enregistrement unifié dans la table Supabase badges_temporaires.
 # =========================================================================
 import datetime
 from pathlib import Path
@@ -150,8 +150,15 @@ def show():
 
     tous_badges_v = [f"V.{i:03d}" for i in range(1, 31)]
 
+    # 🎯 INTÉGRATION DES DEUX MODES DE PASSAGE SANS BADGE PHYSIQUE
+    OPTIONS_SANS_BADGE = [
+        "📦 LIVRAISON (Quai / Sans badge)",
+        "📦 DÉPÔT/RÉCUP MATÉRIEL (Sans badge)",
+    ]
+
     badges_disponibles = (
-        ["Sélectionner un badge...", "📦 LIVRAISON (Sans badge)"]
+        ["Sélectionner un badge..."]
+        + OPTIONS_SANS_BADGE
         + [b for b in tous_badges_v if b not in badges_occupes]
     )
 
@@ -212,7 +219,7 @@ def show():
             )
         elif accord_hote == "✅ ACCEPTÉ" and badge_sel == "Sélectionner un badge...":
             st.error(
-                "⚠️ Un badge physique ou le mode '📦 LIVRAISON (Sans badge)' doit être sélectionné."
+                "⚠️ Veuillez sélectionner un badge physique ou un mode sans badge (Livraison / Dépôt)."
             )
         else:
             now_nc = get_now_nc()
@@ -248,16 +255,31 @@ def show():
 
             # CASE 2 : ACCÈS ACCEPTÉ
             elif accord_hote == "✅ ACCEPTÉ":
-                est_livraison = (badge_sel == "📦 LIVRAISON (Sans badge)")
-                badge_final = "LIVRAISON" if est_livraison else badge_sel
-                ref_prefix = "REF-VIS-IMP-LIV-IN" if est_livraison else "REF-VIS-IMP-IN"
+                est_sans_badge = badge_sel in OPTIONS_SANS_BADGE
+                
+                # Détermination précise du libellé du badge
+                if "LIVRAISON" in badge_sel:
+                    badge_final = "LIVRAISON"
+                    ref_prefix = "REF-VIS-IMP-LIV-IN"
+                    desc_type = "📦 Livraison Imprévue / Quai"
+                    action_desc = "Accès quai de déchargement autorisé sans badge physique."
+                elif "DÉPÔT" in badge_sel:
+                    badge_final = "DEPOT_MATERIEL"
+                    ref_prefix = "REF-VIS-IMP-DEP-IN"
+                    desc_type = "📦 Dépôt / Récupération Matériel"
+                    action_desc = "Accès accueil/quai autorisé pour dépôt/récupération matériel sans badge physique."
+                else:
+                    badge_final = badge_sel
+                    ref_prefix = "REF-VIS-IMP-IN"
+                    desc_type = "Arrivée visiteur imprévu"
+                    action_desc = "Accord obtenu, badge remis et entrée autorisée."
 
                 # Mise à jour mémoire locale Streamlit
                 st.session_state["visiteurs_presents"][key_visiteur] = {
                     "badge": badge_final,
                     "nom": nom_visiteur.upper(),
                     "hote": agent_referent,
-                    "type": "LIVRAISON" if est_livraison else "IMPREVU",
+                    "type": badge_final if est_sans_badge else "IMPREVU",
                 }
                 st.session_state["visiteurs_imprevus_enregistres"].append({
                     "key": key_visiteur,
@@ -287,17 +309,10 @@ def show():
                     print(f"⚠️ Note enregistrement BDD badges_temporaires : {err_b}")
 
                 # Journalisation dans la Main Courante (mc_evenements)
-                desc_log = (
-                    f"📦 Livraison Imprévue / Quai : {nom_visiteur.upper()} ({organisme or 'Transporteur'}) pour {agent_referent} (Badge LIVRAISON)."
-                    if est_livraison
-                    else f"Arrivée visiteur imprévu : {nom_visiteur.upper()} ({organisme or 'N/A'}) - Badge {badge_sel}. Visite autorisée par {agent_referent}."
-                )
-
-                action_log = (
-                    "Accès quai de déchargement autorisé sans badge physique."
-                    if est_livraison
-                    else "Accord obtenu, badge remis et entrée autorisée."
-                )
+                if est_sans_badge:
+                    desc_log = f"{desc_type} : {nom_visiteur.upper()} ({organisme or 'Transporteur/Courrier'}) pour {agent_referent} (Mode : {badge_final})."
+                else:
+                    desc_log = f"{desc_type} : {nom_visiteur.upper()} ({organisme or 'N/A'}) - Badge {badge_sel}. Visite autorisée par {agent_referent}."
 
                 payload_mc = {
                     "reference": f"{ref_prefix}-{ref_time}",
@@ -307,15 +322,15 @@ def show():
                     "horodatage": now_iso,
                     "type_evenement": "VISITEUR",
                     "description": desc_log,
-                    "actions_menees": action_log,
+                    "actions_menees": action_desc,
                 }
                 try:
                     supabase.table("mc_evenements").insert(payload_mc).execute()
                     st.toast(
-                        f"Visiteur enregistré ! Badge **{badge_final}** affecté à **{nom_visiteur.upper()}**.",
+                        f"Visiteur enregistré ! Mode/Badge **{badge_final}** affecté à **{nom_visiteur.upper()}**.",
                         icon="✅",
                     )
-                    st.success(f"🎉 Entrée validée pour **{nom_visiteur.upper()}** (Badge : `{badge_final}`).")
+                    st.success(f"🎉 Entrée validée pour **{nom_visiteur.upper()}** (Mode/Badge : `{badge_final}`).")
                 except Exception as e:
                     st.error(f"Erreur enregistrement MC : {e}")
 

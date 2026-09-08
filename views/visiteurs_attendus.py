@@ -1,12 +1,12 @@
 # =========================================================================
 # MODULE : SUIVI GÉNÉRAL ET VISITEURS ATTENDUS (views/visiteurs_attendus.py)
 # Inclus : Synchronisation BDD, Gestion des imprévus, Planning ASAP,
-#          et Mode Livraison Quai / Sans Badge physique.
+#          et Modes Livraison Quai / Dépôt-Récup Matériel (Sans badge).
 # =========================================================================
-import re
 import datetime
 import io
 from pathlib import Path
+import re
 import sys
 import urllib.request
 import uuid
@@ -22,7 +22,7 @@ from utils.db_client import supabase
 
 URL_ASAP_CSV = "https://docs.google.com/spreadsheets/d/1cKIlYixzeFtJSO3hVQKjkSv_GRPPqEqkzA7zUbSNyKo/gviz/tq?tqx=out:csv&sheet=RendezVous"
 
-# Definition du fuseau horaire Nouvelle-Caledonie (UTC+11)
+# Définition du fuseau horaire Nouvelle-Calédonie (UTC+11)
 TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
 
 
@@ -143,10 +143,12 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
             if "-IN-" in ref:
                 badge = "Aucun"
 
-                # 🎯 EXTRACTION PAR REGEX PARFAITE (Ex: V.001, T.015, LIVRAISON)
+                # 🎯 EXTRACTION PAR REGEX PARFAITE (Ex: V.001, T.015, LIVRAISON, DEPOT_MATERIEL)
                 match_badge = re.search(r"Badge\s+([VTL]\.?[0-9A-Z_]+)", desc, re.IGNORECASE)
                 if match_badge:
                     badge = match_badge.group(1).upper()
+                elif "DEPOT" in desc.upper() or "MATERIEL" in desc.upper():
+                    badge = "DEPOT_MATERIEL"
                 elif "LIVRAISON" in desc.upper():
                     badge = "LIVRAISON"
 
@@ -249,9 +251,15 @@ def show():
 
     tous_badges = [f"V.{i:03d}" for i in range(1, 31)]
     
-    # INTÉGRATION DU MODE LIVRAISON DANS LA LISTE DÉROULANTE
+    # 🎯 INTÉGRATION UNIFIÉE DES MODES SANS BADGE PHYSIQUE
+    OPTIONS_SANS_BADGE = [
+        "📦 LIVRAISON (Quai / Sans badge)",
+        "📦 DÉPÔT/RÉCUP MATÉRIEL (Sans badge)",
+    ]
+
     badges_disponibles = (
-        ["Sélectionner un badge...", "📦 LIVRAISON (Sans badge)"] 
+        ["Sélectionner un badge..."]
+        + OPTIONS_SANS_BADGE
         + [b for b in tous_badges if b not in badges_occupes]
     )
 
@@ -262,7 +270,7 @@ def show():
     imprevus_sur_site = {
         k: v
         for k, v in presents_bdd.items()
-        if "REF-VIS-IMP-IN" in v.get("ref_in", "")
+        if "REF-VIS-IMP-" in v.get("ref_in", "")
     }
 
     if imprevus_sur_site:
@@ -279,7 +287,14 @@ def show():
                     st.markdown(f"👤 **{nom_key}** (Visiteur Imprévu)")
 
                 with col_action:
-                    st.info(f"Badge affecté : **{badge_imp}**")
+                    # 🎯 AFFICHAGE PERSONNALISÉ SELON LE MODE
+                    if badge_imp == "LIVRAISON":
+                        st.warning("📦 **Livraison en cours (Quai)**")
+                    elif badge_imp == "DEPOT_MATERIEL":
+                        st.warning("📦 **Dépôt / Récupération Matériel**")
+                    else:
+                        st.info(f"Badge affecté : **{badge_imp}**")
+
                     if st.button(
                         "🚪 Signaler Sortie",
                         key=f"btn_out_imp_{nom_key}",
@@ -308,8 +323,7 @@ def show():
                             "horodatage": now_nc.isoformat(),
                             "type_evenement": "VISITEUR",
                             "description": (
-                                f"Sortie visiteur imprévu : {nom_key} (Badge"
-                                f" {badge_imp} restitué)."
+                                f"Sortie visiteur imprévu : {nom_key} (Mode/Badge : {badge_imp})."
                             ),
                             "actions_menees": (
                                 "Départ consigné et badge réintégré."
@@ -407,8 +421,11 @@ def show():
                         if est_present:
                             badge_attribue = presents_bdd[nom_visiteur]["badge"]
                             
+                            # 🎯 AFFICHAGE ADAPTÉ SELON LE MODE
                             if badge_attribue == "LIVRAISON":
                                 st.warning("📦 **Livraison en cours (Quai)**")
+                            elif badge_attribue == "DEPOT_MATERIEL":
+                                st.warning("📦 **Dépôt / Récupération Matériel**")
                             else:
                                 st.info(f"Badge affecté : **{badge_attribue}**")
 
@@ -431,7 +448,7 @@ def show():
 
                                 desc_sortie = (
                                     f"Départ Livraison / Camion : {nom_visiteur} (Quai déchargement libéré)."
-                                    if badge_attribue == "LIVRAISON"
+                                    if badge_attribue in ["LIVRAISON", "DEPOT_MATERIEL"]
                                     else f"Sortie visiteur attendu : {nom_visiteur} (Badge {badge_attribue} restitué). Visite de {organisateur}."
                                 )
                                 payload_mc_sortie = {
@@ -479,9 +496,15 @@ def show():
                                     type="primary",
                                     disabled=not badge_valide,
                                 ):
-                                    est_livraison = (badge_sel == "📦 LIVRAISON (Sans badge)")
-                                    valeur_badge = "LIVRAISON" if est_livraison else badge_sel
-                                    ref_entree = "REF-VIS-LIV-IN" if est_livraison else "REF-VIS-IN"
+                                    if "LIVRAISON" in badge_sel:
+                                        valeur_badge = "LIVRAISON"
+                                        ref_entree = "REF-VIS-LIV-IN"
+                                    elif "DÉPÔT" in badge_sel:
+                                        valeur_badge = "DEPOT_MATERIEL"
+                                        ref_entree = "REF-VIS-DEP-IN"
+                                    else:
+                                        valeur_badge = badge_sel
+                                        ref_entree = "REF-VIS-IN"
                                     
                                     # Enregistrement dans badges_temporaires
                                     payload_badge_asap = {
@@ -501,8 +524,8 @@ def show():
                                         print(f"Note enregistrement badge ASAP : {err_b}")
 
                                     desc_entree = (
-                                        f"Arrivée Livraison / Quai : {nom_visiteur} (Société / Livreurs) pour {organisateur} (Badge LIVRAISON)."
-                                        if est_livraison
+                                        f"Arrivée Livraison / Dépôt : {nom_visiteur} pour {organisateur} (Mode : {valeur_badge})."
+                                        if valeur_badge in ["LIVRAISON", "DEPOT_MATERIEL"]
                                         else f"Arrivée visiteur attendu : {nom_visiteur} (Badge {badge_sel}) pour {organisateur} ({email_visiteur})."
                                     )
 
@@ -515,8 +538,8 @@ def show():
                                         "type_evenement": "VISITEUR",
                                         "description": desc_entree,
                                         "actions_menees": (
-                                            "Accès quai enregistré (Livraison)."
-                                            if est_livraison
+                                            "Accès quai/accueil enregistré sans badge."
+                                            if valeur_badge in ["LIVRAISON", "DEPOT_MATERIEL"]
                                             else "Accueil effectué et badge remis."
                                         ),
                                     }
@@ -582,3 +605,7 @@ def show():
             st.info(
                 f"ℹ️ Aucun visiteur attendu le {selected_str_fr} dans le planning ASAP."
             )
+
+
+if __name__ == "__main__":
+    show()
