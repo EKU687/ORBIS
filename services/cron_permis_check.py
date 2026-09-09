@@ -1,13 +1,14 @@
 # =========================================================================
 # CRON AUTOMATISÉ : VÉRIFICATION MATINALE DES PERMIS DE CONDUIRE
 # Emplacement : services/cron_permis_check.py
-# Inclus : Contrôle 90 jours, Suspension BDD Supabase, Notifications Email + CC Admin,
-#          Inscriptions automatiques dans la Main Courante.
+# Inclus : Contrôle 90 jours, Suspension BDD Agents_Publics, 
+#          Notifications Email + CC Admin, Journalisation dans mc_evenements.
 # =========================================================================
 import datetime
 import os
 import smtplib
 import sys
+import uuid
 import zoneinfo
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -23,10 +24,11 @@ from utils.db_client import supabase
 
 TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
 DELAI_VALIDE_JOURS = 90
+VACATION_SYSTEM_UUID = "00000000-0000-0000-0000-000000000000"
 
 # Configuration SMTP (extraite des variables d'environnement)
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_PORT = os.getenv("SMTP_PORT", "587")
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 EMAIL_ADMIN_CC = os.getenv("EMAIL_ADMIN_CC", "eric.kuter@gouv.nc")  # 👈 Ta boîte e-mail en CC
@@ -85,14 +87,46 @@ def envoyer_email_notification(email_agent: str, nom_complet: str, type_alerte: 
     msg.attach(MIMEText(html_content, "html"))
 
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            destinataires = [email_agent, EMAIL_ADMIN_CC]
-            server.sendmail(SMTP_USER, destinataires, msg.as_string())
+        port = int(SMTP_PORT)
+        if port == 465:
+            with smtplib.SMTP_SSL(SMTP_SERVER, port) as server:
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                destinataires = [email_agent, EMAIL_ADMIN_CC]
+                server.sendmail(SMTP_USER, destinataires, msg.as_string())
+        else:
+            with smtplib.SMTP(SMTP_SERVER, port) as server:
+                server.ehlo()
+                server.starttls()
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                destinataires = [email_agent, EMAIL_ADMIN_CC]
+                server.sendmail(SMTP_USER, destinataires, msg.as_string())
+
         print(f"📧 [EMAIL] Notification ({type_alerte}) envoyée à {email_agent} (CC: {EMAIL_ADMIN_CC})")
     except Exception as e:
         print(f"❌ [EMAIL] Erreur lors de l'envoi à {email_agent} : {e}")
+
+
+def consigner_evenement_main_courante(nom_complet: str, description: str):
+    """Consigne un événement système de manière conforme dans la table mc_evenements."""
+    try:
+        now_nc = get_now_nc()
+        ref_unique = f"MC-{now_nc.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
+
+        supabase.table("mc_evenements").insert({
+            "reference": ref_unique,
+            "vacation_id": VACATION_SYSTEM_UUID,
+            "site_id": "DINUM",
+            "agent_nom": "SYSTEME_CRON",
+            "type_evenement": "PERMIS_VEHICULE",
+            "description": f"🔒 SUSPENSION AUTOMATIQUE : {nom_complet}. {description}",
+            "actions_menees": "Passage de autorise_vehicule à FALSE en BDD. Notification e-mail transmise à l'agent et admin.",
+            "horodatage": now_nc.isoformat(),
+            "notified_authority": False
+        }).execute()
+
+        print(f"📝 [MC_EVENEMENTS] Événement {ref_unique} consigné avec succès.")
+    except Exception as err_mc:
+        print(f"⚠️ [MC_EVENEMENTS] Erreur écriture journal : {err_mc}")
 
 
 def verifier_et_suspendre_permis():
@@ -100,7 +134,7 @@ def verifier_et_suspendre_permis():
     - Identifie les contrôles de plus de 90 jours.
     - Bascule `autorise_vehicule` à FALSE en BDD.
     - Envoie les notifications e-mails (Agent + CC Admin).
-    - Inscrit l'événement dans la Main Courante.
+    - Inscrit l'événement dans la Main Courante (mc_evenements).
     """
     aujourdhui = get_now_nc().date()
     print("=" * 60)
@@ -134,17 +168,7 @@ def verifier_et_suspendre_permis():
                 supabase.table("Agents_Publics").update({"autorise_vehicule": False}).eq("id", ag["id"]).execute()
                 
                 envoyer_email_notification(email_agent, nom_complet, "SUSPENSION", "Aucun contrôle enregistré")
-                
-                # Inscription Main Courante
-                supabase.table("main_courante").insert({
-                    "site_id": "DINUM",
-                    "agent_auteur": "SYSTEME_CRON",
-                    "categorie": "SECURITE",
-                    "titre": f"🔒 SUSPENSION AUTOMATIQUE PERMIS : {nom_complet}",
-                    "description": "Révocation de l'autorisation véhicule : Aucune date de contrôle enregistrée.",
-                    "horodatage": get_now_nc().isoformat(),
-                    "statut": "CLOTURE",
-                }).execute()
+                consigner_evenement_main_courante(nom_complet, "Révocation de l'autorisation véhicule : Aucune date de contrôle enregistrée.")
                 
                 nb_suspendus += 1
                 continue
@@ -167,16 +191,10 @@ def verifier_et_suspendre_permis():
                     "SUSPENSION", 
                     f"Dernier contrôle le {dt_ctrl.strftime('%d/%m/%Y')}"
                 )
-
-                supabase.table("main_courante").insert({
-                    "site_id": "DINUM",
-                    "agent_auteur": "SYSTEME_CRON",
-                    "categorie": "SECURITE",
-                    "titre": f"🔒 SUSPENSION AUTOMATIQUE PERMIS : {nom_complet}",
-                    "description": f"Dépassement du délai de 90 jours (Dernier contrôle le {dt_ctrl.strftime('%d/%m/%Y')}). Droit véhicule suspendu.",
-                    "horodatage": get_now_nc().isoformat(),
-                    "statut": "CLOTURE",
-                }).execute()
+                consigner_evenement_main_courante(
+                    nom_complet, 
+                    f"Dépassement du délai de 90 jours (Dernier contrôle le {dt_ctrl.strftime('%d/%m/%Y')}). Droit véhicule suspendu."
+                )
 
                 nb_suspendus += 1
 
