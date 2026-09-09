@@ -112,7 +112,7 @@ def consigner_evenement_main_courante(nom_complet: str, description: str):
         now_nc = get_now_nc()
         ref_unique = f"MC-{now_nc.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
 
-        # 1. Récupération d'une vacation valide en BDD pour respecter la clé étrangère (FK)
+        # 1. Tentative avec filtre site_id = DINUM
         res_vac = (
             supabase.table("vacations")
             .select("id")
@@ -124,11 +124,22 @@ def consigner_evenement_main_courante(nom_complet: str, description: str):
         
         vacation_id_valide = res_vac.data[0]["id"] if res_vac.data else None
 
+        # 2. Fallback : Si aucune vacation DINUM, on prend la toute dernière vacation en BDD
         if not vacation_id_valide:
-            print("⚠️ [MC_EVENEMENTS] Aucune vacation trouvée pour lier l'événement.")
+            res_vac_any = (
+                supabase.table("vacations")
+                .select("id")
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            vacation_id_valide = res_vac_any.data[0]["id"] if res_vac_any.data else None
+
+        if not vacation_id_valide:
+            print("⚠️ [MC_EVENEMENTS] Aucune vacation présente dans la BDD pour lier l'événement.")
             return
 
-        # 2. Insertion avec le vrai vacation_id
+        # 3. Insertion dans mc_evenements
         supabase.table("mc_evenements").insert({
             "reference": ref_unique,
             "vacation_id": vacation_id_valide,
