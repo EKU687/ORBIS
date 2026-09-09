@@ -1,7 +1,8 @@
 # =========================================================================
 # MODULE : SUIVI GÉNÉRAL ET VISITEURS ATTENDUS (views/visiteurs_attendus.py)
-# Inclus : Synchronisation BDD, Importation CSV manuelle, Gestion des imprévus,
-#          Planning ASAP, et Modes Livraison Quai / Dépôt-Récup Matériel.
+# Inclus : Synchronisation BDD, Importation CSV réservée ADMIN, 
+#          Gestion des imprévus, Planning ASAP, 
+#          et Modes Livraison Quai / Dépôt-Récup Matériel.
 # =========================================================================
 import datetime
 import io
@@ -199,7 +200,7 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
 
 
 def generer_modele_csv() -> bytes:
-    """Génère un exemple de fichier CSV téléchargable pour les imports en masse."""
+    """Génère un exemple de fichier CSV téléchargeable pour les imports en masse."""
     df_modele = pd.DataFrame([
         {
             "date": datetime.date.today().strftime("%d/%m/%Y"),
@@ -230,10 +231,17 @@ def show():
     )
 
     site_actuel = st.session_state.get("site_actif", "DINUM")
-    user_info = st.session_state.get(
-        "user_profile", {"full_name": "Éric KUTER"}
-    )
+    
+    # Récupération du profil utilisateur et contrôle du rôle
+    user_info = st.session_state.get("user_profile", {"full_name": "Éric KUTER", "role": "ADMIN"})
     agent_connecte = user_info.get("full_name", "Éric KUTER")
+    
+    # Habilitation ADMIN : Vérifie le rôle dans le profil ou une variable de session dédiée
+    is_admin = (
+        user_info.get("role", "").upper() == "ADMIN" 
+        or st.session_state.get("is_admin", False)
+        or user_info.get("is_admin", False)
+    )
 
     # 1. Date courante en Nouvelle-Calédonie
     aujourdhui_nc = datetime.datetime.now(TZ_NC).date()
@@ -249,7 +257,7 @@ def show():
         )
     
     with c_head2:
-        st.write("")  # Espaceur
+        st.write("")  # Espaceur d'alignement
         st.write("")
         if selected_date == aujourdhui_nc:
             st.caption("🟢 Temps réel (Aujourd'hui)")
@@ -259,7 +267,7 @@ def show():
             st.caption("🟠 Historique / Archives")
 
     with c_head3:
-        st.write("")  # Espaceur
+        st.write("")  # Espaceur d'alignement
         st.write("")
         if st.button("🔄 Actualiser", use_container_width=True):
             st.cache_data.clear()
@@ -268,38 +276,38 @@ def show():
     selected_str_fr = selected_date.strftime("%d/%m/%Y")
     selected_str_iso = selected_date.strftime("%Y-%m-%d")
 
-    # --- 📥 MODULE IMPORTATION MANUELLE DE RDV EN MASSE (CSV) ---
-    with st.expander("📥 Importer des Rendez-vous / Visiteurs en Masse (Fichier CSV)", expanded=False):
-        c_imp1, c_imp2 = st.columns([2, 1])
-        with c_imp1:
-            st.markdown("Importez un fichier CSV contenant la liste des visiteurs attendus.")
-        with c_imp2:
-            st.download_button(
-                label="📄 Télécharger Modèle CSV",
-                data=generer_modele_csv(),
-                file_name="modele_import_visiteurs.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+    # --- 📥 MODULE IMPORTATION MANUELLE DE RDV EN MASSE (RÉSERVÉ ADMIN) ---
+    if is_admin:
+        with st.expander("🔐 [ADMIN] Importer des Rendez-vous / Visiteurs en Masse (Fichier CSV)", expanded=False):
+            c_imp1, c_imp2 = st.columns([2, 1])
+            with c_imp1:
+                st.markdown("Importez un fichier CSV contenant la liste des visiteurs attendus pour un événement spécifique.")
+            with c_imp2:
+                st.download_button(
+                    label="📄 Modèle CSV",
+                    data=generer_modele_csv(),
+                    file_name="modele_import_visiteurs.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
 
-        uploaded_file = st.file_uploader("Sélectionner un fichier CSV", type=["csv"])
-        if uploaded_file is not None:
-            try:
-                # Analyse automatique du séparateur (virgule ou point-virgule)
-                content = uploaded_file.getvalue().decode("utf-8")
-                sep = ";" if ";" in content else ","
-                df_custom = pd.read_csv(io.StringIO(content), sep=sep)
-                df_custom.columns = [str(col).strip() for col in df_custom.columns]
+            uploaded_file = st.file_uploader("Sélectionner un fichier CSV", type=["csv"], key="csv_admin_uploader")
+            if uploaded_file is not None:
+                try:
+                    content = uploaded_file.getvalue().decode("utf-8")
+                    sep = ";" if ";" in content else ","
+                    df_custom = pd.read_csv(io.StringIO(content), sep=sep)
+                    df_custom.columns = [str(col).strip() for col in df_custom.columns]
 
-                st.success(f"📋 {len(df_custom)} ligne(s) détectée(s) dans le fichier CSV.")
-                st.dataframe(df_custom.head(5), use_container_width=True)
+                    st.success(f"📋 {len(df_custom)} ligne(s) détectée(s) dans le fichier CSV.")
+                    st.dataframe(df_custom.head(5), use_container_width=True)
 
-                if st.button("🚀 Valider et Fusionner avec le Planning", type="primary"):
-                    st.session_state["df_custom_import"] = df_custom
-                    st.toast("Importation locale effectuée avec succès !", icon="✅")
-                    st.rerun()
-            except Exception as err_file:
-                st.error(f"❌ Erreur lors de la lecture du fichier CSV : {err_file}")
+                    if st.button("🚀 Valider et Fusionner avec le Planning", type="primary"):
+                        st.session_state["df_custom_import"] = df_custom
+                        st.toast("Importation administrateur effectuée avec succès !", icon="✅")
+                        st.rerun()
+                except Exception as err_file:
+                    st.error(f"❌ Erreur lors de la lecture du fichier CSV : {err_file}")
 
     # --- LECTURE BDD POUR LA DATE SÉLECTIONNÉE ---
     presents_bdd, sortis_bdd, absents_bdd, badges_occupes = (
