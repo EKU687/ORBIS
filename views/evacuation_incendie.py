@@ -47,36 +47,85 @@ def fetch_aeos_presents(site_id: str) -> list[dict]:
 
 
 def fetch_orbis_visiteurs_presents(site_id: str) -> list[dict]:
-    """Récupère les visiteurs et livreurs actuellement sur site depuis badges_temporaires."""
+    """Récupère tous les visiteurs et livreurs actuellement sur site depuis BDD (mc_evenements + badges_temporaires)."""
+    clean_visiteurs = []
+    site_target = str(site_id).upper().strip() if site_id else "DINUM"
+    now_nc = get_now_nc()
+    dt_start = datetime.datetime.combine(now_nc.date(), datetime.time.min, tzinfo=TZ_NC).isoformat()
+    dt_end = datetime.datetime.combine(now_nc.date(), datetime.time.max, tzinfo=TZ_NC).isoformat()
+
     try:
-        site_target = str(site_id).upper().strip() if site_id else "DINUM"
-        res = (
+        # 1. Source A : badges_temporaires
+        res_bdg = (
             supabase.table("badges_temporaires")
             .select("*")
             .eq("site_id", site_target)
             .eq("statut", "EN_COURS")
             .execute()
         )
-        raw_data = res.data or []
-        
-        # 🎯 FILTRAGE SÉCURITÉ : Élimination des lignes anonymes ou sans nom
-        clean_visiteurs = []
-        for vis in raw_data:
-            nom_test = (
-                vis.get("nom_porteur")
-                or vis.get("nom_agent")
-                or vis.get("nom_complet")
-                or vis.get("nom")
-                or ""
-            )
+        for vis in (res_bdg.data or []):
+            nom_test = vis.get("nom_porteur") or vis.get("nom_agent") or vis.get("nom_complet") or vis.get("nom") or ""
             if str(nom_test).strip() and str(nom_test).strip().upper() != "INCONNU":
-                clean_visiteurs.append(vis)
+                clean_visiteurs.append({
+                    "nom_porteur": str(nom_test).strip().upper(),
+                    "num_badge": vis.get("num_badge", "Sans Badge"),
+                    "type_badge": vis.get("type_porteur", "VISITEUR"),
+                    "organisme": vis.get("organisme", "Extérieur"),
+                    "hote_referent": vis.get("hote_referent", "Non précisé")
+                })
+
+        # 2. Source B : Recherche des entrées sans sortie du jour dans mc_evenements (ASAP, CSV, Imprévus)
+        res_mc = (
+            supabase.table("mc_evenements")
+            .select("*")
+            .eq("site_id", site_target)
+            .eq("type_evenement", "VISITEUR")
+            .gte("horodatage", dt_start)
+            .lte("horodatage", dt_end)
+            .order("horodatage", desc=False)
+            .execute()
+        )
+
+        presents_mc = {}
+        for ev in (res_mc.data or []):
+            ref = ev.get("reference", "")
+            desc = ev.get("description", "")
+            
+            # Nom du visiteur extrait de la description
+            nom_key = desc.split(":")[1].split("(")[0].strip().upper() if ":" in desc else desc.strip().upper()
+
+            if "-IN-" in ref:
+                bdg_val = "Sans Badge"
+                if "LIVRAISON" in desc.upper():
+                    bdg_val = "LIVRAISON"
+                elif "DEPOT" in desc.upper() or "MATERIEL" in desc.upper():
+                    bdg_val = "DEPOT_MATERIEL"
+                elif "BADGE" in desc.upper():
+                    parts = desc.split("Badge")
+                    if len(parts) > 1:
+                        bdg_val = parts[1].split(")")[0].strip()
+
+                presents_mc[nom_key] = {
+                    "nom_porteur": nom_key,
+                    "num_badge": bdg_val,
+                    "type_badge": "VISITEUR",
+                    "organisme": "Extérieur",
+                    "hote_referent": "Accueilli sur site"
+                }
+            elif "-OUT-" in ref or "-ABS-" in ref:
+                presents_mc.pop(nom_key, None)
+
+        # 3. Déduplication par nom entre les deux sources
+        noms_existants = {v["nom_porteur"] for v in clean_visiteurs}
+        for nom_mc, info_mc in presents_mc.items():
+            if nom_mc not in noms_existants:
+                clean_visiteurs.append(info_mc)
 
         return clean_visiteurs
+
     except Exception as e:
         st.error(f"⚠️ Erreur chargement Visiteurs ORBIS : {e}")
-        return []
-
+        return clean_visiteurs
 
 def afficher_tableau_pointage(df_data: pd.DataFrame, key_suffix: str):
     """Affiche un tableau interactif Streamlit avec case de pointage et progression."""
