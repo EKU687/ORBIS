@@ -107,14 +107,31 @@ def envoyer_email_notification(email_agent: str, nom_complet: str, type_alerte: 
 
 
 def consigner_evenement_main_courante(nom_complet: str, description: str):
-    """Consigne un événement système de manière conforme dans la table mc_evenements."""
+    """Consigne un événement système en récupérant une vacation valide."""
     try:
         now_nc = get_now_nc()
         ref_unique = f"MC-{now_nc.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
 
+        # 1. Récupération d'une vacation valide en BDD pour respecter la clé étrangère (FK)
+        res_vac = (
+            supabase.table("vacations")
+            .select("id")
+            .eq("site_id", "DINUM")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        
+        vacation_id_valide = res_vac.data[0]["id"] if res_vac.data else None
+
+        if not vacation_id_valide:
+            print("⚠️ [MC_EVENEMENTS] Aucune vacation trouvée pour lier l'événement.")
+            return
+
+        # 2. Insertion avec le vrai vacation_id
         supabase.table("mc_evenements").insert({
             "reference": ref_unique,
-            "vacation_id": VACATION_SYSTEM_UUID,
+            "vacation_id": vacation_id_valide,
             "site_id": "DINUM",
             "agent_nom": "SYSTEME_CRON",
             "type_evenement": "PERMIS_VEHICULE",
