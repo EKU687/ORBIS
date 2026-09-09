@@ -1,7 +1,7 @@
 # =========================================================================
 # MODULE : SUIVI GÉNÉRAL ET VISITEURS ATTENDUS (views/visiteurs_attendus.py)
-# Inclus : Synchronisation BDD, Gestion des imprévus, Planning ASAP,
-#          et Modes Livraison Quai / Dépôt-Récup Matériel (Sans badge).
+# Inclus : Synchronisation BDD, Importation CSV manuelle, Gestion des imprévus,
+#          Planning ASAP, et Modes Livraison Quai / Dépôt-Récup Matériel.
 # =========================================================================
 import datetime
 import io
@@ -39,7 +39,7 @@ def fetch_asap_data(url: str) -> pd.DataFrame:
         df.columns = [str(col).strip() for col in df.columns]
         return df
     except Exception as e:
-        st.error(f"⚠️ Erreur de chargement du fichier CSV : {e}")
+        st.error(f"⚠️ Erreur de chargement du fichier CSV ASAP : {e}")
         return pd.DataFrame()
 
 
@@ -143,7 +143,7 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
             if "-IN-" in ref:
                 badge = "Aucun"
 
-                # 🎯 EXTRACTION PAR REGEX PARFAITE (Ex: V.001, T.015, LIVRAISON, DEPOT_MATERIEL)
+                # 🎯 EXTRACTION PAR REGEX
                 match_badge = re.search(r"Badge\s+([VTL]\.?[0-9A-Z_]+)", desc, re.IGNORECASE)
                 if match_badge:
                     badge = match_badge.group(1).upper()
@@ -158,7 +158,6 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
                     else desc.strip().upper()
                 )
 
-                # RECOURS BDD (badges_temporaires) si la description ne contient pas le format exact
                 if badge in ["Aucun", "", "V"] and nom_key in map_badges_bdd:
                     badge = map_badges_bdd[nom_key]
 
@@ -199,6 +198,31 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
     return presents_dict, sortis_set, absents_set, badges_occupes
 
 
+def generer_modele_csv() -> bytes:
+    """Génère un exemple de fichier CSV téléchargable pour les imports en masse."""
+    df_modele = pd.DataFrame([
+        {
+            "date": datetime.date.today().strftime("%d/%m/%Y"),
+            "Heure Arrivée": "08:30",
+            "Heure Départ": "10:00",
+            "nom": "DUPONT Jean",
+            "email": "jean.dupont@entreprise.nc",
+            "organisateur(s)": "Service Informatique",
+            "statut": "CONFIRME"
+        },
+        {
+            "date": datetime.date.today().strftime("%d/%m/%Y"),
+            "Heure Arrivée": "14:00",
+            "Heure Départ": "15:30",
+            "nom": "MARTIN Sophie",
+            "email": "sophie.martin@prestataire.nc",
+            "organisateur(s)": "Direction DINUM",
+            "statut": "CONFIRME"
+        }
+    ])
+    return df_modele.to_csv(index=False, sep=";").encode("utf-8")
+
+
 def show():
     st.title("👥 Suivi Général des Visiteurs (Persistance BDD)")
     st.caption(
@@ -225,7 +249,7 @@ def show():
         )
     
     with c_head2:
-        st.write("")  # Espaceur d'alignement
+        st.write("")  # Espaceur
         st.write("")
         if selected_date == aujourdhui_nc:
             st.caption("🟢 Temps réel (Aujourd'hui)")
@@ -235,7 +259,7 @@ def show():
             st.caption("🟠 Historique / Archives")
 
     with c_head3:
-        st.write("")  # Espaceur d'alignement
+        st.write("")  # Espaceur
         st.write("")
         if st.button("🔄 Actualiser", use_container_width=True):
             st.cache_data.clear()
@@ -244,6 +268,39 @@ def show():
     selected_str_fr = selected_date.strftime("%d/%m/%Y")
     selected_str_iso = selected_date.strftime("%Y-%m-%d")
 
+    # --- 📥 MODULE IMPORTATION MANUELLE DE RDV EN MASSE (CSV) ---
+    with st.expander("📥 Importer des Rendez-vous / Visiteurs en Masse (Fichier CSV)", expanded=False):
+        c_imp1, c_imp2 = st.columns([2, 1])
+        with c_imp1:
+            st.markdown("Importez un fichier CSV contenant la liste des visiteurs attendus.")
+        with c_imp2:
+            st.download_button(
+                label="📄 Télécharger Modèle CSV",
+                data=generer_modele_csv(),
+                file_name="modele_import_visiteurs.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+        uploaded_file = st.file_uploader("Sélectionner un fichier CSV", type=["csv"])
+        if uploaded_file is not None:
+            try:
+                # Analyse automatique du séparateur (virgule ou point-virgule)
+                content = uploaded_file.getvalue().decode("utf-8")
+                sep = ";" if ";" in content else ","
+                df_custom = pd.read_csv(io.StringIO(content), sep=sep)
+                df_custom.columns = [str(col).strip() for col in df_custom.columns]
+
+                st.success(f"📋 {len(df_custom)} ligne(s) détectée(s) dans le fichier CSV.")
+                st.dataframe(df_custom.head(5), use_container_width=True)
+
+                if st.button("🚀 Valider et Fusionner avec le Planning", type="primary"):
+                    st.session_state["df_custom_import"] = df_custom
+                    st.toast("Importation locale effectuée avec succès !", icon="✅")
+                    st.rerun()
+            except Exception as err_file:
+                st.error(f"❌ Erreur lors de la lecture du fichier CSV : {err_file}")
+
     # --- LECTURE BDD POUR LA DATE SÉLECTIONNÉE ---
     presents_bdd, sortis_bdd, absents_bdd, badges_occupes = (
         get_visiteurs_presents_bdd(site_actuel, selected_date)
@@ -251,7 +308,6 @@ def show():
 
     tous_badges = [f"V.{i:03d}" for i in range(1, 31)]
     
-    # 🎯 INTÉGRATION UNIFIÉE DES MODES SANS BADGE PHYSIQUE
     OPTIONS_SANS_BADGE = [
         "📦 LIVRAISON (Quai / Sans badge)",
         "📦 DÉPÔT/RÉCUP MATÉRIEL (Sans badge)",
@@ -287,7 +343,6 @@ def show():
                     st.markdown(f"👤 **{nom_key}** (Visiteur Imprévu)")
 
                 with col_action:
-                    # 🎯 AFFICHAGE PERSONNALISÉ SELON LE MODE
                     if badge_imp == "LIVRAISON":
                         st.warning("📦 **Livraison en cours (Quai)**")
                     elif badge_imp == "DEPOT_MATERIEL":
@@ -304,7 +359,6 @@ def show():
                         now_nc = datetime.datetime.now(TZ_NC)
                         ref_time = now_nc.strftime("%Y%m%d-%H%M%S")
 
-                        # Libération du badge dans badges_temporaires si présent
                         try:
                             supabase.table("badges_temporaires").update(
                                 {
@@ -344,9 +398,15 @@ def show():
     else:
         st.info("ℹ️ Aucun visiteur imprévu actuellement présent sur site.")
 
-    # --- 2. VISITEURS ATTENDUS (ASAP) ---
-    st.markdown(f"### 👥 Visiteurs Attendus (Planning ASAP du {selected_str_fr})")
+    # --- 2. VISITEURS ATTENDUS (ASAP + CSV IMPORTÉ) ---
+    st.markdown(f"### 👥 Visiteurs Attendus (Planning du {selected_str_fr})")
+    
+    # 1. Chargement ASAP
     df_raw = fetch_asap_data(URL_ASAP_CSV)
+    
+    # 2. Fusion avec le CSV Importé manuellement si présent dans la session
+    if "df_custom_import" in st.session_state and isinstance(st.session_state["df_custom_import"], pd.DataFrame):
+        df_raw = pd.concat([df_raw, st.session_state["df_custom_import"]], ignore_index=True)
 
     if not df_raw.empty:
         if "statut" in df_raw.columns:
@@ -421,7 +481,6 @@ def show():
                         if est_present:
                             badge_attribue = presents_bdd[nom_visiteur]["badge"]
                             
-                            # 🎯 AFFICHAGE ADAPTÉ SELON LE MODE
                             if badge_attribue == "LIVRAISON":
                                 st.warning("📦 **Livraison en cours (Quai)**")
                             elif badge_attribue == "DEPOT_MATERIEL":
@@ -435,7 +494,6 @@ def show():
                                 use_container_width=True,
                                 type="secondary",
                             ):
-                                # Libération du badge dans badges_temporaires si présent
                                 try:
                                     supabase.table("badges_temporaires").update(
                                         {
@@ -506,7 +564,6 @@ def show():
                                         valeur_badge = badge_sel
                                         ref_entree = "REF-VIS-IN"
                                     
-                                    # Enregistrement dans badges_temporaires
                                     payload_badge_asap = {
                                         "site_id": site_actuel,
                                         "num_badge": valeur_badge,
@@ -562,36 +619,26 @@ def show():
                                     "❌ Absent / Annulé",
                                     key=f"btn_abs_{idx}",
                                     use_container_width=True,
-                                    help=(
-                                        "Consigner l'absence et retirer de la"
-                                        " liste d'attente"
-                                    ),
+                                    help="Consigner l'absence et retirer de la liste",
                                 ):
                                     payload_mc_absent = {
-                                        "reference": (
-                                            f"REF-VIS-ABS-{ref_time}"
-                                        ),
+                                        "reference": f"REF-VIS-ABS-{ref_time}",
                                         "vacation_id": vac_id,
                                         "site_id": site_actuel,
                                         "agent_nom": agent_connecte,
                                         "horodatage": now_nc.isoformat(),
                                         "type_evenement": "VISITEUR",
                                         "description": (
-                                            "Visiteur non présenté :"
-                                            f" {nom_visiteur} ({email_visiteur})"
-                                            f" pour {organisateur}."
+                                            f"Visiteur non présenté : {nom_visiteur} ({email_visiteur}) pour {organisateur}."
                                         ),
-                                        "actions_menees": (
-                                            "Absence consignée en Main Courante."
-                                        ),
+                                        "actions_menees": "Absence consignée en Main Courante.",
                                     }
                                     try:
                                         supabase.table("mc_evenements").insert(
                                             payload_mc_absent
                                         ).execute()
                                         st.toast(
-                                            f"Absence de {nom_visiteur}"
-                                            " consignée !",
+                                            f"Absence de {nom_visiteur} consignée !",
                                             icon="🚫",
                                         )
                                         st.rerun()
@@ -603,7 +650,7 @@ def show():
                     st.markdown("---")
         else:
             st.info(
-                f"ℹ️ Aucun visiteur attendu le {selected_str_fr} dans le planning ASAP."
+                f"ℹ️ Aucun visiteur attendu le {selected_str_fr} dans le planning."
             )
 
 
