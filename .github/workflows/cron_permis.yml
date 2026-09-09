@@ -1,0 +1,36 @@
+name: 🚗 Contrôle Matinal des Permis de Conduire
+
+on:
+  schedule:
+    # 06h00 Nouméa (UTC+11) correspond à 19h00 UTC la veille
+    - cron: '0 19 * * *'
+  workflow_dispatch: # Permet d'exécuter le script manuellement depuis l'interface GitHub
+
+jobs:
+  run-permis-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Récupération du dépôt
+        uses: actions/checkout@v3
+
+      - name: 🐍 Configuration de Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 📦 Installation des dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install supabase pandas
+
+      - name: 🚀 Lancement du Cron Permis
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_ADMIN_CC: ${{ secrets.EMAIL_ADMIN_CC }}
+        run: python services/cron_permis_check.py
