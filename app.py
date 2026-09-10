@@ -15,8 +15,6 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from config import APP_AUTHOR, APP_DATE, APP_ENV, APP_NAME, APP_VERSION, APP_SUBTITLE
 
-st.warning("⚠️ MODE DÉVELOPPEMENT - Branche DEV active ⚠️")
-
 # --- CONFIGURATION DU FUSEAU HORAIRE NOUVELLE-CALÉDONIE (UTC+11) ---
 TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
 
