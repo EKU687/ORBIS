@@ -58,7 +58,7 @@ def envoyer_email_notification(email_agent: str, nom_complet: str, type_alerte: 
         <p>La période de validité de 90 jours de votre dernier contrôle de permis de conduire est arrivée à échéance ({details}).</p>
         <p>Conformément aux consignes de sécurité du site, <b>votre autorisation d'utilisation des véhicules de service est automatiquement suspendue</b> à compter de ce jour.</p>
         <hr style="border: none; border-top: 1px solid #ccc;">
-        <p><b>Action requise :</b> Veuillez présenter votre permis de conduire original au PC Garde / Service Sûreté afin de renouveler votre contrôle réglementaire et rétablir vos droits.</p>
+        <p><b>Action requise :</b> Veuillez présenter votre permis de conduire original au PC Sécurité afin de renouveler votre contrôle réglementaire et rétablir vos droits.</p>
         """
     else:  # AVERTISSEMENT
         msg["Subject"] = "⚠️ RAPPEL : Renouvellement de votre contrôle de Permis de Conduire"
@@ -66,7 +66,7 @@ def envoyer_email_notification(email_agent: str, nom_complet: str, type_alerte: 
         titre_header = "⚠️ Expiration prochaine de votre Autorisation de Conduite"
         texte_body = f"""
         <p>Votre dernier contrôle de permis de conduire arrivera à échéance dans <b>{details} jour(s)</b>.</p>
-        <p>Afin d'éviter toute interruption de vos droits de réservation de véhicule de service, merci de bien vouloir présenter votre permis au PC Garde rapidement.</p>
+        <p>Afin d'éviter toute interruption de vos droits de réservation de véhicule de service, merci de bien vouloir présenter votre permis au PC Sécurité rapidement.</p>
         """
 
     msg["From"] = SMTP_USER
