@@ -151,13 +151,15 @@ def calculer_statut_creneau(
     seed_str = f"{date_jour.isoformat()}_{heure_cible_str}"
     decalage_minutes = int(hashlib.md5(seed_str.encode("utf-8")).hexdigest(), 16) % 11
 
-    # Date cible théorique (ex: 20:00)
+    # Date cible théorique aujourd'hui
     dt_base = now_datetime.replace(
         hour=h_target, minute=m_target, second=0, microsecond=0
     )
 
-    # 🎯 GESTION DU PASSAGE À MINUIT (00h00 -> 05h00)
-    if h_target <= 5 and now_datetime.hour >= 5:
+    # 🎯 CORRECTION PASSAGE À MINUIT :
+    # Si la ronde est prévue entre 00h00 et 05h00 MAIS qu'on consulte l'application
+    # durant la soirée de la veille (ex: entre 20h00 et 23h59), alors la ronde appartient au lendemain.
+    if h_target <= 5 and now_datetime.hour >= 20:
         dt_base += datetime.timedelta(days=1)
 
     # 2. Définition de l'heure de début effective (+ décalage) et de fin (+30 min)
