@@ -1,7 +1,7 @@
 # =========================================================================
 # MODULE : SUIVI GÉNÉRAL ET VISITEURS ATTENDUS (views/visiteurs_attendus.py)
-# Inclus : Synchronisation BDD, Importation CSV réservée ADMIN, 
-#          Gestion des imprévus, Planning ASAP, 
+# Inclus : Synchronisation BDD, Importation CSV réservée ADMIN,
+#          Gestion des imprévus, Planning ASAP,
 #          et Modes Livraison Quai / Dépôt-Récup Matériel.
 # =========================================================================
 import datetime
@@ -30,9 +30,7 @@ TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
 @st.cache_data(ttl=180)
 def fetch_asap_data(url: str) -> pd.DataFrame:
     try:
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0"}
-        )
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=8) as response:
             csv_data = response.read().decode("utf-8")
 
@@ -48,6 +46,19 @@ def clean_organisateur(val: str) -> str:
     if not val or pd.isna(val):
         return "Non précisé"
     return str(val).replace("(undefined)", "").strip()
+
+
+def extraire_nom_visiteur(desc: str) -> str:
+    """Extrait proprement le nom de famille et prénom du visiteur depuis la description."""
+    if not desc:
+        return ""
+    if ":" in desc:
+        apres_col = desc.split(":", 1)[1]
+        nom_brut = re.split(r"\s+(?:pour|\(|avec|\.)", apres_col, flags=re.IGNORECASE)[
+            0
+        ]
+        return nom_brut.strip().upper()
+    return desc.strip().upper()
 
 
 def get_or_create_vacation_id(site_id: str, agent_nom: str) -> str:
@@ -98,7 +109,7 @@ def fetch_badges_temporaires_actifs(site_id: str) -> dict[str, str]:
             .eq("statut", "EN_COURS")
             .execute()
         )
-        for row in (res.data or []):
+        for row in res.data or []:
             nom = str(row.get("nom_porteur", "")).strip().upper()
             bdg = row.get("num_badge")
             if nom and bdg:
@@ -108,7 +119,9 @@ def fetch_badges_temporaires_actifs(site_id: str) -> dict[str, str]:
     return badge_map
 
 
-def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tuple[dict, set, set, set]:
+def get_visiteurs_presents_bdd(
+    site_id: str, target_date: datetime.date
+) -> tuple[dict, set, set, set]:
     """Interroge Supabase pour déterminer la présence réelle et les absences/annulations à une date cible."""
     dt_start = datetime.datetime.combine(
         target_date, datetime.time.min, tzinfo=TZ_NC
@@ -139,25 +152,26 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
         for ev in res.data:
             ref = ev.get("reference", "")
             desc = ev.get("description", "")
+            nom_key = extraire_nom_visiteur(desc)
 
             # Détection entrée
-            if "-IN-" in ref:
+            if "-IN" in ref:
                 badge = "Aucun"
 
                 # 🎯 EXTRACTION PAR REGEX
-                match_badge = re.search(r"Badge\s+([VTL]\.?[0-9A-Z_]+)", desc, re.IGNORECASE)
+                match_badge = re.search(
+                    r"Badge\s+([VTL]\.?[0-9A-Z_]+)", desc, re.IGNORECASE
+                )
                 if match_badge:
                     badge = match_badge.group(1).upper()
-                elif "DEPOT" in desc.upper() or "MATERIEL" in desc.upper():
+                elif (
+                    "DEPOT" in desc.upper()
+                    or "MATERIEL" in desc.upper()
+                    or "REF-VIS-DEP-IN" in ref
+                ):
                     badge = "DEPOT_MATERIEL"
-                elif "LIVRAISON" in desc.upper():
+                elif "LIVRAISON" in desc.upper() or "REF-VIS-LIV-IN" in ref:
                     badge = "LIVRAISON"
-
-                nom_key = (
-                    desc.split(":")[1].split("(")[0].strip().upper()
-                    if ":" in desc
-                    else desc.strip().upper()
-                )
 
                 if badge in ["Aucun", "", "V"] and nom_key in map_badges_bdd:
                     badge = map_badges_bdd[nom_key]
@@ -171,12 +185,7 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
                     badges_occupes.add(badge)
 
             # Détection sortie
-            elif "-OUT-" in ref:
-                nom_key = (
-                    desc.split(":")[1].split("(")[0].strip().upper()
-                    if ":" in desc
-                    else desc.strip().upper()
-                )
+            elif "-OUT" in ref:
                 if nom_key in presents_dict:
                     badge_lib = presents_dict[nom_key]["badge"]
                     presents_dict.pop(nom_key, None)
@@ -185,12 +194,7 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
                 sortis_set.add(nom_key)
 
             # Détection absence / annulation
-            elif "-ABS-" in ref:
-                nom_key = (
-                    desc.split(":")[1].split("(")[0].strip().upper()
-                    if ":" in desc
-                    else desc.strip().upper()
-                )
+            elif "-ABS" in ref:
                 absents_set.add(nom_key)
 
     except Exception as e:
@@ -201,26 +205,28 @@ def get_visiteurs_presents_bdd(site_id: str, target_date: datetime.date) -> tupl
 
 def generer_modele_csv() -> bytes:
     """Génère un exemple de fichier CSV téléchargeable pour les imports en masse."""
-    df_modele = pd.DataFrame([
-        {
-            "date": datetime.date.today().strftime("%d/%m/%Y"),
-            "Heure Arrivée": "08:30",
-            "Heure Départ": "10:00",
-            "nom": "DUPONT Jean",
-            "email": "jean.dupont@entreprise.nc",
-            "organisateur(s)": "Service Informatique",
-            "statut": "CONFIRME"
-        },
-        {
-            "date": datetime.date.today().strftime("%d/%m/%Y"),
-            "Heure Arrivée": "14:00",
-            "Heure Départ": "15:30",
-            "nom": "MARTIN Sophie",
-            "email": "sophie.martin@prestataire.nc",
-            "organisateur(s)": "Direction DINUM",
-            "statut": "CONFIRME"
-        }
-    ])
+    df_modele = pd.DataFrame(
+        [
+            {
+                "date": datetime.date.today().strftime("%d/%m/%Y"),
+                "Heure Arrivée": "08:30",
+                "Heure Départ": "10:00",
+                "nom": "DUPONT Jean",
+                "email": "jean.dupont@entreprise.nc",
+                "organisateur(s)": "Service Informatique",
+                "statut": "CONFIRME",
+            },
+            {
+                "date": datetime.date.today().strftime("%d/%m/%Y"),
+                "Heure Arrivée": "14:00",
+                "Heure Départ": "15:30",
+                "nom": "MARTIN Sophie",
+                "email": "sophie.martin@prestataire.nc",
+                "organisateur(s)": "Direction DINUM",
+                "statut": "CONFIRME",
+            },
+        ]
+    )
     return df_modele.to_csv(index=False, sep=";").encode("utf-8")
 
 
@@ -231,14 +237,16 @@ def show():
     )
 
     site_actuel = st.session_state.get("site_actif", "DINUM")
-    
+
     # Récupération du profil utilisateur et contrôle du rôle
-    user_info = st.session_state.get("user_profile", {"full_name": "Éric KUTER", "role": "ADMIN"})
+    user_info = st.session_state.get(
+        "user_profile", {"full_name": "Éric KUTER", "role": "ADMIN"}
+    )
     agent_connecte = user_info.get("full_name", "Éric KUTER")
-    
+
     # Habilitation ADMIN : Vérifie le rôle dans le profil ou une variable de session dédiée
     is_admin = (
-        user_info.get("role", "").upper() == "ADMIN" 
+        user_info.get("role", "").upper() == "ADMIN"
         or st.session_state.get("is_admin", False)
         or user_info.get("is_admin", False)
     )
@@ -248,14 +256,14 @@ def show():
 
     # 2. En-tête avec Sélecteur de date et Bouton d'actualisation
     c_head1, c_head2, c_head3 = st.columns([2, 1.5, 1])
-    
+
     with c_head1:
         selected_date = st.date_input(
             "📅 Date de consultation :",
             value=aujourdhui_nc,
             format="DD/MM/YYYY",
         )
-    
+
     with c_head2:
         st.write("")  # Espaceur d'alignement
         st.write("")
@@ -278,20 +286,29 @@ def show():
 
     # --- 📥 MODULE IMPORTATION MANUELLE DE RDV EN MASSE (RÉSERVÉ ADMIN) ---
     if is_admin:
-        with st.expander("🔐 [ADMIN] Importer des Rendez-vous / Visiteurs en Masse (Fichier CSV)", expanded=False):
+        with st.expander(
+            "🔐 [ADMIN] Importer des Rendez-vous / Visiteurs en Masse (Fichier CSV)",
+            expanded=False,
+        ):
             c_imp1, c_imp2 = st.columns([2, 1])
             with c_imp1:
-                st.markdown("Importez un fichier CSV contenant la liste des visiteurs attendus pour un événement spécifique.")
+                st.markdown(
+                    "Importez un fichier CSV contenant la liste des visiteurs attendus pour un événement spécifique."
+                )
             with c_imp2:
                 st.download_button(
                     label="📄 Modèle CSV",
                     data=generer_modele_csv(),
                     file_name="modele_import_visiteurs.csv",
                     mime="text/csv",
-                    use_container_width=True
+                    use_container_width=True,
                 )
 
-            uploaded_file = st.file_uploader("Sélectionner un fichier CSV", type=["csv"], key="csv_admin_uploader")
+            uploaded_file = st.file_uploader(
+                "Sélectionner un fichier CSV",
+                type=["csv"],
+                key="csv_admin_uploader",
+            )
             if uploaded_file is not None:
                 try:
                     content = uploaded_file.getvalue().decode("utf-8")
@@ -299,23 +316,33 @@ def show():
                     df_custom = pd.read_csv(io.StringIO(content), sep=sep)
                     df_custom.columns = [str(col).strip() for col in df_custom.columns]
 
-                    st.success(f"📋 {len(df_custom)} ligne(s) détectée(s) dans le fichier CSV.")
+                    st.success(
+                        f"📋 {len(df_custom)} ligne(s) détectée(s) dans le fichier CSV."
+                    )
                     st.dataframe(df_custom.head(5), use_container_width=True)
 
-                    if st.button("🚀 Valider et Fusionner avec le Planning", type="primary"):
+                    if st.button(
+                        "🚀 Valider et Fusionner avec le Planning",
+                        type="primary",
+                    ):
                         st.session_state["df_custom_import"] = df_custom
-                        st.toast("Importation administrateur effectuée avec succès !", icon="✅")
+                        st.toast(
+                            "Importation administrateur effectuée avec succès !",
+                            icon="✅",
+                        )
                         st.rerun()
                 except Exception as err_file:
-                    st.error(f"❌ Erreur lors de la lecture du fichier CSV : {err_file}")
+                    st.error(
+                        f"❌ Erreur lors de la lecture du fichier CSV : {err_file}"
+                    )
 
     # --- LECTURE BDD POUR LA DATE SÉLECTIONNÉE ---
-    presents_bdd, sortis_bdd, absents_bdd, badges_occupes = (
-        get_visiteurs_presents_bdd(site_actuel, selected_date)
+    presents_bdd, sortis_bdd, absents_bdd, badges_occupes = get_visiteurs_presents_bdd(
+        site_actuel, selected_date
     )
 
     tous_badges = [f"V.{i:03d}" for i in range(1, 31)]
-    
+
     OPTIONS_SANS_BADGE = [
         "📦 LIVRAISON (Quai / Sans badge)",
         "📦 DÉPÔT/RÉCUP MATÉRIEL (Sans badge)",
@@ -332,9 +359,7 @@ def show():
     # --- 1. VISITEURS IMPRÉVUS SUR SITE (BDD) ---
     st.markdown("### ✍️ Visiteurs Imprévus sur Site")
     imprevus_sur_site = {
-        k: v
-        for k, v in presents_bdd.items()
-        if "REF-VIS-IMP-" in v.get("ref_in", "")
+        k: v for k, v in presents_bdd.items() if "REF-VIS-IMP-" in v.get("ref_in", "")
     }
 
     if imprevus_sur_site:
@@ -373,7 +398,11 @@ def show():
                                     "statut": "RESTITUE",
                                     "heure_restitution": now_nc.isoformat(),
                                 }
-                            ).eq("site_id", str(site_actuel)).eq("nom_porteur", nom_key).eq("statut", "EN_COURS").execute()
+                            ).eq("site_id", str(site_actuel)).eq(
+                                "nom_porteur", nom_key
+                            ).eq(
+                                "statut", "EN_COURS"
+                            ).execute()
                         except Exception as err_rest:
                             print(f"Note libération badge_temporaire : {err_rest}")
 
@@ -387,17 +416,13 @@ def show():
                             "description": (
                                 f"Sortie visiteur imprévu : {nom_key} (Mode/Badge : {badge_imp})."
                             ),
-                            "actions_menees": (
-                                "Départ consigné et badge réintégré."
-                            ),
+                            "actions_menees": ("Départ consigné et badge réintégré."),
                         }
                         try:
                             supabase.table("mc_evenements").insert(
                                 payload_sortie
                             ).execute()
-                            st.toast(
-                                f"Sortie de {nom_key} enregistrée !", icon="🚪"
-                            )
+                            st.toast(f"Sortie de {nom_key} enregistrée !", icon="🚪")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Erreur enregistrement MC : {e}")
@@ -408,29 +433,28 @@ def show():
 
     # --- 2. VISITEURS ATTENDUS (ASAP + CSV IMPORTÉ) ---
     st.markdown(f"### 👥 Visiteurs Attendus (Planning du {selected_str_fr})")
-    
+
     # 1. Chargement ASAP
     df_raw = fetch_asap_data(URL_ASAP_CSV)
-    
+
     # 2. Fusion avec le CSV Importé manuellement si présent dans la session
-    if "df_custom_import" in st.session_state and isinstance(st.session_state["df_custom_import"], pd.DataFrame):
-        df_raw = pd.concat([df_raw, st.session_state["df_custom_import"]], ignore_index=True)
+    if "df_custom_import" in st.session_state and isinstance(
+        st.session_state["df_custom_import"], pd.DataFrame
+    ):
+        df_raw = pd.concat(
+            [df_raw, st.session_state["df_custom_import"]], ignore_index=True
+        )
 
     if not df_raw.empty:
         if "statut" in df_raw.columns:
             df_filtered = df_raw[
-                ~df_raw["statut"]
-                .astype(str)
-                .str.upper()
-                .str.contains("REFUS")
+                ~df_raw["statut"].astype(str).str.upper().str.contains("REFUS")
             ].copy()
         else:
             df_filtered = df_raw.copy()
 
         if "date" in df_filtered.columns:
-            df_filtered["date_str"] = (
-                df_filtered["date"].astype(str).str.strip()
-            )
+            df_filtered["date_str"] = df_filtered["date"].astype(str).str.strip()
             df_target_date = df_filtered[
                 (df_filtered["date_str"] == selected_str_fr)
                 | (df_filtered["date_str"] == selected_str_iso)
@@ -440,7 +464,9 @@ def show():
 
         # Filtrer ceux déjà sortis ET ceux déclarés non présentés / annulés
         if not df_target_date.empty:
-            df_target_date["nom_clean"] = df_target_date["nom"].astype(str).str.strip().str.upper()
+            df_target_date["nom_clean"] = (
+                df_target_date["nom"].astype(str).str.strip().str.upper()
+            )
             df_target_date = df_target_date[
                 (~df_target_date["nom_clean"].isin(sortis_bdd))
                 & (~df_target_date["nom_clean"].isin(absents_bdd))
@@ -450,20 +476,14 @@ def show():
             with st.container(height=450):
                 for idx, row in df_target_date.iterrows():
                     h_arr = (
-                        row.get("Heure Arrivée")
-                        or row.get("Heure Arrivee")
-                        or "--:--"
+                        row.get("Heure Arrivée") or row.get("Heure Arrivee") or "--:--"
                     )
                     h_dep = (
-                        row.get("Heure Départ")
-                        or row.get("Heure Depart")
-                        or "--:--"
+                        row.get("Heure Départ") or row.get("Heure Depart") or "--:--"
                     )
                     nom_visiteur = str(row.get("nom") or "Inconnu").strip().upper()
                     email_visiteur = row.get("email") or "N/A"
-                    organisateur = clean_organisateur(
-                        row.get("organisateur(s)")
-                    )
+                    organisateur = clean_organisateur(row.get("organisateur(s)"))
 
                     est_present = nom_visiteur in presents_bdd
 
@@ -477,9 +497,7 @@ def show():
                             st.caption("⏳ Attendu")
 
                     with col_info:
-                        st.markdown(
-                            f"👤 **{nom_visiteur}** (`{email_visiteur}`)"
-                        )
+                        st.markdown(f"👤 **{nom_visiteur}** (`{email_visiteur}`)")
                         st.write(f"🏢 **Hôte :** {organisateur}")
 
                     with col_action:
@@ -488,7 +506,7 @@ def show():
 
                         if est_present:
                             badge_attribue = presents_bdd[nom_visiteur]["badge"]
-                            
+
                             if badge_attribue == "LIVRAISON":
                                 st.warning("📦 **Livraison en cours (Quai)**")
                             elif badge_attribue == "DEPOT_MATERIEL":
@@ -508,9 +526,15 @@ def show():
                                             "statut": "RESTITUE",
                                             "heure_restitution": now_nc.isoformat(),
                                         }
-                                    ).eq("site_id", str(site_actuel)).eq("nom_porteur", nom_visiteur).eq("statut", "EN_COURS").execute()
+                                    ).eq("site_id", str(site_actuel)).eq(
+                                        "nom_porteur", nom_visiteur
+                                    ).eq(
+                                        "statut", "EN_COURS"
+                                    ).execute()
                                 except Exception as err_rest:
-                                    print(f"Note libération badge_temporaire : {err_rest}")
+                                    print(
+                                        f"Note libération badge_temporaire : {err_rest}"
+                                    )
 
                                 desc_sortie = (
                                     f"Départ Livraison / Camion : {nom_visiteur} (Quai déchargement libéré)."
@@ -547,10 +571,8 @@ def show():
                                 badges_disponibles,
                                 key=f"sel_bdg_{idx}",
                             )
-                            
-                            badge_valide = (
-                                badge_sel != "Sélectionner un badge..."
-                            )
+
+                            badge_valide = badge_sel != "Sélectionner un badge..."
 
                             c_btn_arr, c_btn_abs = st.columns([1.5, 1])
 
@@ -571,7 +593,7 @@ def show():
                                     else:
                                         valeur_badge = badge_sel
                                         ref_entree = "REF-VIS-IN"
-                                    
+
                                     payload_badge_asap = {
                                         "site_id": site_actuel,
                                         "num_badge": valeur_badge,
@@ -583,14 +605,18 @@ def show():
                                     }
                                     try:
                                         supabase.table("badges_temporaires").upsert(
-                                            payload_badge_asap, on_conflict="site_id,num_badge"
+                                            payload_badge_asap,
+                                            on_conflict="site_id,num_badge",
                                         ).execute()
                                     except Exception as err_b:
-                                        print(f"Note enregistrement badge ASAP : {err_b}")
+                                        print(
+                                            f"Note enregistrement badge ASAP : {err_b}"
+                                        )
 
                                     desc_entree = (
                                         f"Arrivée Livraison / Dépôt : {nom_visiteur} pour {organisateur} (Mode : {valeur_badge})."
-                                        if valeur_badge in ["LIVRAISON", "DEPOT_MATERIEL"]
+                                        if valeur_badge
+                                        in ["LIVRAISON", "DEPOT_MATERIEL"]
                                         else f"Arrivée visiteur attendu : {nom_visiteur} (Badge {badge_sel}) pour {organisateur} ({email_visiteur})."
                                     )
 
@@ -604,7 +630,11 @@ def show():
                                         "description": desc_entree,
                                         "actions_menees": (
                                             "Accès quai/accueil enregistré sans badge."
-                                            if valeur_badge in ["LIVRAISON", "DEPOT_MATERIEL"]
+                                            if valeur_badge
+                                            in [
+                                                "LIVRAISON",
+                                                "DEPOT_MATERIEL",
+                                            ]
                                             else "Accueil effectué et badge remis."
                                         ),
                                     }
@@ -618,9 +648,7 @@ def show():
                                         )
                                         st.rerun()
                                     except Exception as e:
-                                        st.error(
-                                            f"Erreur enregistrement MC : {e}"
-                                        )
+                                        st.error(f"Erreur enregistrement MC : {e}")
 
                             with c_btn_abs:
                                 if st.button(
@@ -651,15 +679,11 @@ def show():
                                         )
                                         st.rerun()
                                     except Exception as e:
-                                        st.error(
-                                            f"Erreur enregistrement MC : {e}"
-                                        )
+                                        st.error(f"Erreur enregistrement MC : {e}")
 
                     st.markdown("---")
         else:
-            st.info(
-                f"ℹ️ Aucun visiteur attendu le {selected_str_fr} dans le planning."
-            )
+            st.info(f"ℹ️ Aucun visiteur attendu le {selected_str_fr} dans le planning.")
 
 
 if __name__ == "__main__":
