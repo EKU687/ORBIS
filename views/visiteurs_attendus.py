@@ -236,6 +236,10 @@ def show():
         "Registre d'accueil synchronisé en temps réel avec la base de données Supabase."
     )
 
+    # --- INITIALISATION SÉCURISÉE DU SESSION STATE ---
+    if "df_custom_import" not in st.session_state:
+        st.session_state["df_custom_import"] = pd.DataFrame()
+
     site_actuel = st.session_state.get("site_actif", "DINUM")
 
     # Récupération du profil utilisateur et contrôle du rôle
@@ -324,17 +328,40 @@ def show():
                     if st.button(
                         "🚀 Valider et Fusionner avec le Planning",
                         type="primary",
+                        key="btn_valider_import_csv",
                     ):
-                        st.session_state["df_custom_import"] = df_custom
+                        # Concaténation sécurisée avec l'existant
+                        if not st.session_state["df_custom_import"].empty:
+                            st.session_state["df_custom_import"] = pd.concat(
+                                [st.session_state["df_custom_import"], df_custom],
+                                ignore_index=True,
+                            )
+                        else:
+                            st.session_state["df_custom_import"] = df_custom
+
                         st.toast(
                             "Importation administrateur effectuée avec succès !",
                             icon="✅",
                         )
                         st.rerun()
+
                 except Exception as err_file:
                     st.error(
                         f"❌ Erreur lors de la lecture du fichier CSV : {err_file}"
                     )
+
+            # Option pour réinitialiser / vider le CSV importé si présent
+            if not st.session_state["df_custom_import"].empty:
+                st.info(
+                    f"💡 {len(st.session_state['df_custom_import'])} visiteur(s) issu(s) d'un import CSV en masse actuellement actif(s) en mémoire."
+                )
+                if st.button(
+                    "🗑️ Vider les visiteurs importés manuellement",
+                    type="secondary",
+                ):
+                    st.session_state["df_custom_import"] = pd.DataFrame()
+                    st.toast("Liste des imports réinitialisée.", icon="🗑️")
+                    st.rerun()
 
     # --- LECTURE BDD POUR LA DATE SÉLECTIONNÉE ---
     presents_bdd, sortis_bdd, absents_bdd, badges_occupes = get_visiteurs_presents_bdd(
@@ -438,12 +465,9 @@ def show():
     df_raw = fetch_asap_data(URL_ASAP_CSV)
 
     # 2. Fusion avec le CSV Importé manuellement si présent dans la session
-    if "df_custom_import" in st.session_state and isinstance(
-        st.session_state["df_custom_import"], pd.DataFrame
-    ):
-        df_raw = pd.concat(
-            [df_raw, st.session_state["df_custom_import"]], ignore_index=True
-        )
+    df_custom = st.session_state.get("df_custom_import")
+    if isinstance(df_custom, pd.DataFrame) and not df_custom.empty:
+        df_raw = pd.concat([df_raw, df_custom], ignore_index=True)
 
     if not df_raw.empty:
         if "statut" in df_raw.columns:
