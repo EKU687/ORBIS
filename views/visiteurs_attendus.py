@@ -1,6 +1,6 @@
 # =========================================================================
 # MODULE : SUIVI GÉNÉRAL ET VISITEURS ATTENDUS (views/visiteurs_attendus.py)
-# Inclus : Synchronisation BDD, Importation CSV réservée ADMIN,
+# Inclus : Synchronisation BDD, Importation CSV réservée ADMIN (Persistance Supabase),
 #          Gestion des imprévus, Planning ASAP,
 #          et Modes Livraison Quai / Dépôt-Récup Matériel.
 # =========================================================================
@@ -40,6 +40,36 @@ def fetch_asap_data(url: str) -> pd.DataFrame:
     except Exception as e:
         st.error(f"⚠️ Erreur de chargement du fichier CSV ASAP : {e}")
         return pd.DataFrame()
+
+
+def fetch_visiteurs_importes_bdd(
+    site_id: str, target_date: datetime.date
+) -> pd.DataFrame:
+    """Récupère les visiteurs importés par CSV stockés en BDD dans orbis_visiteurs_importes."""
+    try:
+        res = (
+            supabase.table("orbis_visiteurs_importes")
+            .select("*")
+            .eq("site_id", str(site_id))
+            .eq("date_visite", target_date.strftime("%Y-%m-%d"))
+            .execute()
+        )
+        if res.data:
+            df = pd.DataFrame(res.data)
+            # Normalisation des colonnes pour alignement avec le format ASAP
+            df_renamed = df.rename(
+                columns={
+                    "date_visite": "date",
+                    "heure_arrivee": "Heure Arrivée",
+                    "heure_depart": "Heure Départ",
+                    "organisateur": "organisateur(s)",
+                }
+            )
+            df_renamed["date"] = target_date.strftime("%d/%m/%Y")
+            return df_renamed
+    except Exception as e:
+        print(f"Note lecture orbis_visiteurs_importes BDD : {e}")
+    return pd.DataFrame()
 
 
 def clean_organisateur(val: str) -> str:
@@ -158,7 +188,7 @@ def get_visiteurs_presents_bdd(
             if "-IN" in ref:
                 badge = "Aucun"
 
-                # 🎯 EXTRACTION PAR REGEX
+                # EXTRACTION PAR REGEX
                 match_badge = re.search(
                     r"Badge\s+([VTL]\.?[0-9A-Z_]+)", desc, re.IGNORECASE
                 )
@@ -236,10 +266,6 @@ def show():
         "Registre d'accueil synchronisé en temps réel avec la base de données Supabase."
     )
 
-    # --- INITIALISATION SÉCURISÉE DU SESSION STATE ---
-    if "df_custom_import" not in st.session_state:
-        st.session_state["df_custom_import"] = pd.DataFrame()
-
     site_actuel = st.session_state.get("site_actif", "DINUM")
 
     # Récupération du profil utilisateur et contrôle du rôle
@@ -248,7 +274,7 @@ def show():
     )
     agent_connecte = user_info.get("full_name", "Éric KUTER")
 
-    # Habilitation ADMIN : Vérifie le rôle dans le profil ou une variable de session dédiée
+    # Habilitation ADMIN
     is_admin = (
         user_info.get("role", "").upper() == "ADMIN"
         or st.session_state.get("is_admin", False)
@@ -288,7 +314,7 @@ def show():
     selected_str_fr = selected_date.strftime("%d/%m/%Y")
     selected_str_iso = selected_date.strftime("%Y-%m-%d")
 
-    # --- 📥 MODULE IMPORTATION MANUELLE DE RDV EN MASSE (RÉSERVÉ ADMIN) ---
+    # --- 📥 MODULE IMPORTATION MANUELLE EN MASSE (PERSISTANCE SUPABASE) ---
     if is_admin:
         with st.expander(
             "🔐 [ADMIN] Importer des Rendez-vous / Visiteurs en Masse (Fichier CSV)",
@@ -326,42 +352,82 @@ def show():
                     st.dataframe(df_custom.head(5), use_container_width=True)
 
                     if st.button(
-                        "🚀 Valider et Fusionner avec le Planning",
+                        "🚀 Valider et Enregistrer en Base de Données",
                         type="primary",
                         key="btn_valider_import_csv",
                     ):
-                        # Concaténation sécurisée avec l'existant
-                        if not st.session_state["df_custom_import"].empty:
-                            st.session_state["df_custom_import"] = pd.concat(
-                                [st.session_state["df_custom_import"], df_custom],
-                                ignore_index=True,
-                            )
-                        else:
-                            st.session_state["df_custom_import"] = df_custom
+                        records_to_insert = []
+                        for _, r in df_custom.iterrows():
+                            raw_date = str(r.get("date", "")).strip()
 
-                        st.toast(
-                            "Importation administrateur effectuée avec succès !",
-                            icon="✅",
-                        )
-                        st.rerun()
+                            # Conversion de la date au format YYYY-MM-DD pour PostgreSQL
+                            date_iso = None
+                            try:
+                                if "/" in raw_date:
+                                    jj, mm, aaaa = raw_date.split("/")
+                                    date_iso = f"{aaaa}-{mm.zfill(2)}-{jj.zfill(2)}"
+                                else:
+                                    date_iso = raw_date
+                            except Exception:
+                                date_iso = selected_str_iso
+
+                            records_to_insert.append(
+                                {
+                                    "site_id": site_actuel,
+                                    "date_visite": date_iso,
+                                    "heure_arrivee": str(
+                                        r.get("Heure Arrivée")
+                                        or r.get("Heure Arrivee")
+                                        or "--:--"
+                                    ),
+                                    "heure_depart": str(
+                                        r.get("Heure Départ")
+                                        or r.get("Heure Depart")
+                                        or "--:--"
+                                    ),
+                                    "nom": str(r.get("nom", "INCONNU")).strip().upper(),
+                                    "email": str(r.get("email", "N/A")),
+                                    "organisateur": clean_organisateur(
+                                        r.get("organisateur(s)")
+                                    ),
+                                    "statut": str(r.get("statut", "CONFIRME")).upper(),
+                                    "cree_par": agent_connecte,
+                                }
+                            )
+
+                        if records_to_insert:
+                            supabase.table("orbis_visiteurs_importes").insert(
+                                records_to_insert
+                            ).execute()
+                            st.toast(
+                                f"✅ {len(records_to_insert)} visiteurs sauvegardés en BDD avec succès !",
+                                icon="💾",
+                            )
+                            st.rerun()
 
                 except Exception as err_file:
-                    st.error(
-                        f"❌ Erreur lors de la lecture du fichier CSV : {err_file}"
-                    )
+                    st.error(f"❌ Erreur lors de l'importation en BDD : {err_file}")
 
-            # Option pour réinitialiser / vider le CSV importé si présent
-            if not st.session_state["df_custom_import"].empty:
+            # Bouton de purge ADMIN pour la date sélectionnée
+            df_existing_imports = fetch_visiteurs_importes_bdd(
+                site_actuel, selected_date
+            )
+            if not df_existing_imports.empty:
                 st.info(
-                    f"💡 {len(st.session_state['df_custom_import'])} visiteur(s) issu(s) d'un import CSV en masse actuellement actif(s) en mémoire."
+                    f"💡 {len(df_existing_imports)} visiteur(s) de l'import CSV enregistrés en BDD pour le {selected_str_fr}."
                 )
                 if st.button(
-                    "🗑️ Vider les visiteurs importés manuellement",
+                    f"🗑️ Purger les visiteurs CSV importés pour le {selected_str_fr}",
                     type="secondary",
                 ):
-                    st.session_state["df_custom_import"] = pd.DataFrame()
-                    st.toast("Liste des imports réinitialisée.", icon="🗑️")
-                    st.rerun()
+                    try:
+                        supabase.table("orbis_visiteurs_importes").delete().eq(
+                            "site_id", site_actuel
+                        ).eq("date_visite", selected_str_iso).execute()
+                        st.toast("Imports CSV de la journée purgés.", icon="🗑️")
+                        st.rerun()
+                    except Exception as err_del:
+                        st.error(f"Erreur purge : {err_del}")
 
     # --- LECTURE BDD POUR LA DATE SÉLECTIONNÉE ---
     presents_bdd, sortis_bdd, absents_bdd, badges_occupes = get_visiteurs_presents_bdd(
@@ -458,16 +524,17 @@ def show():
     else:
         st.info("ℹ️ Aucun visiteur imprévu actuellement présent sur site.")
 
-    # --- 2. VISITEURS ATTENDUS (ASAP + CSV IMPORTÉ) ---
+    # --- 2. VISITEURS ATTENDUS (ASAP + BDD VISITEURS IMPORTÉS) ---
     st.markdown(f"### 👥 Visiteurs Attendus (Planning du {selected_str_fr})")
 
-    # 1. Chargement ASAP
-    df_raw = fetch_asap_data(URL_ASAP_CSV)
+    # 1. Chargement ASAP (Google Sheet)
+    df_asap = fetch_asap_data(URL_ASAP_CSV)
 
-    # 2. Fusion avec le CSV Importé manuellement si présent dans la session
-    df_custom = st.session_state.get("df_custom_import")
-    if isinstance(df_custom, pd.DataFrame) and not df_custom.empty:
-        df_raw = pd.concat([df_raw, df_custom], ignore_index=True)
+    # 2. Chargement des Visiteurs Importés (Supabase)
+    df_bdd_imports = fetch_visiteurs_importes_bdd(site_actuel, selected_date)
+
+    # 3. Concaténation multi-sources
+    df_raw = pd.concat([df_asap, df_bdd_imports], ignore_index=True)
 
     if not df_raw.empty:
         if "statut" in df_raw.columns:
