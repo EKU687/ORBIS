@@ -13,7 +13,7 @@ import cadre_entreprise.ui as ui
 import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
-from config import APP_AUTHOR, APP_DATE, APP_ENV, APP_NAME, APP_VERSION, APP_SUBTITLE
+from config import APP_AUTHOR, APP_DATE, APP_ENV, APP_NAME, APP_SUBTITLE, APP_VERSION
 
 # --- CONFIGURATION DU FUSEAU HORAIRE NOUVELLE-CALÉDONIE (UTC+11) ---
 TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
@@ -100,14 +100,8 @@ def charger_sites_actifs() -> list[str]:
             .order("nom_site")
             .execute()
         )
-        sites = [
-            row["nom_site"] for row in (res.data or []) if row.get("nom_site")
-        ]
-        return (
-            sites
-            if sites
-            else ["DINUM", "DOUMER", "GNC", "HÔTEL DU GOUVERNEMENT"]
-        )
+        sites = [row["nom_site"] for row in (res.data or []) if row.get("nom_site")]
+        return sites if sites else ["DINUM", "DOUMER", "GNC", "HÔTEL DU GOUVERNEMENT"]
     except Exception as err:
         print(f"Erreur chargement table Sites : {err}")
         return ["DINUM", "DOUMER", "GNC", "HÔTEL DU GOUVERNEMENT"]
@@ -186,8 +180,7 @@ st.sidebar.markdown("---")
 
 st.sidebar.markdown(f"👤 **{user.get('full_name', 'AGENT')}**")
 st.sidebar.caption(
-    f"🏢 Service : **{user.get('service', 'PC Garde')}** | 🔑 Rôle :"
-    f" `{role_actif}`"
+    f"🏢 Service : **{user.get('service', 'PC Garde')}** | 🔑 Rôle :" f" `{role_actif}`"
 )
 
 if est_multi_sites:
@@ -200,7 +193,10 @@ if est_multi_sites:
         "📍 Site de Supervision / Garde :",
         SITES_DISPONIBLES,
         index=idx_defaut,
-        help="Profil Administrateur / Sûreté : liste dynamique issue de la base 'Sites'.",
+        help=(
+            "Profil Administrateur / Sûreté : liste dynamique issue de la"
+            " base 'Sites'."
+        ),
     )
 else:
     site_selected = site_defaut_user
@@ -240,19 +236,23 @@ ROLES_REGISTRE = ["CHARGE_SURETE", "ADMIN", "COS", "SUPER_ADMIN"]
 if role_actif in ROLES_REGISTRE:
     menu_options["📖 Consulter Registre"] = "registre"
 
-menu_options.update({
-    "✍️ Visiteur Imprévu": "visiteur_imprevu",
-    "👥 Visiteurs Attendus": "visiteurs_attendus",
-    "🏢 Présences sur site": "evacuation_incendie",  # 🎯 REINTEGRÉ DANS LE MENU RADIO
-    "🔦 Suivi des Rondes": "suivi_rondes",
-    "⚠️ Anomalies & Vigilance": "anomalies",
-    label_badges: "badges",
-    "🚗 Gestion des Permis": "permis",
-})
+menu_options.update(
+    {
+        "✍️ Visiteur Imprévu": "visiteur_imprevu",
+        "👥 Visiteurs Attendus": "visiteurs_attendus",
+        "🏢 Présences sur site": "evacuation_incendie",
+        "🔦 Suivi des Rondes": "suivi_rondes",
+        "🚨 Anomalies & Consignes Générales": "anomalies",  # 🎯 Libellé clarifié (Ex: Anomalies & Vigilance)
+        label_badges: "badges",
+        "🚗 Gestion des Permis": "permis",
+    }
+)
 
 ROLES_ADMIN_ONLY = ["ADMIN", "SUPER_ADMIN", "CHARGE_SURETE", "COS"]
 if role_actif in ROLES_ADMIN_ONLY:
-    menu_options["⚙️ Consignes (Admin)"] = "consignes_admin"
+    menu_options["🎯 Consignes Ciblées (Admin)"] = (
+        "consignes_admin"  # 🎯 Libellé clarifié (Ex: Consignes Admin)
+    )
     menu_options["🛡️ Hypervision COS"] = "hypervision"
 
 menu_options["🔍 Recherche Prestataires"] = "recherche_prestataires"
@@ -268,9 +268,14 @@ st.sidebar.markdown("---")
 nom_user_encoded = str(user.get("full_name", "")).replace(" ", "%20")
 st.sidebar.link_button(
     "🚪 Moniteur Mouvements (Onglet Dédié)",
-    url=f"?site={site_selected}&role={role_actif}&user={nom_user_encoded}&view=mouvements",
+    url=(
+        f"?site={site_selected}&role={role_actif}&user={nom_user_encoded}&view=mouvements"
+    ),
     use_container_width=True,
-    help="Ouvre la console des flux d'entrées/sorties en continu dans un nouvel onglet.",
+    help=(
+        "Ouvre la console des flux d'entrées/sorties en continu dans un nouvel"
+        " onglet."
+    ),
 )
 
 st.sidebar.markdown("---")
@@ -291,50 +296,62 @@ if st.sidebar.button(
 # =========================================================================
 if module_actif == "main_courante":
     from views import main_courante
+
     main_courante.show()
 
 elif module_actif == "registre":
     from views import registre
+
     registre.show(user)
 
 elif module_actif == "visiteur_imprevu":
     from views import visiteur_imprevu
+
     visiteur_imprevu.show()
 
 elif module_actif == "visiteurs_attendus":
     from views import visiteurs_attendus
+
     visiteurs_attendus.show()
 
 elif module_actif == "evacuation_incendie":
     from views import evacuation_incendie
+
     evacuation_incendie.show()
 
 elif module_actif == "suivi_rondes":
     from views import suivi_rondes
+
     suivi_rondes.show()
 
 elif module_actif == "anomalies":
     from views import anomalies
+
     anomalies.show()
 
 elif module_actif == "badges":
     from views import badges
+
     badges.show()
 
 elif module_actif == "permis":
     from views import permis
+
     permis.show()
 
 elif module_actif == "consignes_admin":
     from views import consignes_admin
+
     consignes_admin.show(user)
 
 elif module_actif == "hypervision":
     from views import hypervision
+
     hypervision.show()
 
 elif module_actif == "recherche_prestataires":
     from views import recherche_prestataires
+
     recherche_prestataires.show()
 
 else:
