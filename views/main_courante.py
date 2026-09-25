@@ -1,8 +1,8 @@
 # =========================================================================
 # MODULE : MAIN COURANTE SERVICE TERRAIN (views/main_courante.py)
 # Inclus : Vacation site, pop-up de prise de poste avec filtrage dynamique
-#          des consignes (Globales & Ciblées par agent), saisie, journal
-#          ET modale de fin de poste explicite.
+#          des consignes (Globales & Ciblées par agent), émargement unique,
+#          saisie d'événements, journal BDD et clôture de vacation.
 # =========================================================================
 import datetime
 from pathlib import Path
@@ -55,9 +55,13 @@ def get_active_vacation(site_id: str, agent_nom: str):
         return None
 
 
-def fetch_consignes_cibles_agent(site_id: str, agent_login: str) -> list[dict]:
-    """Récupère les consignes actives du site et les filtre pour l'agent connecté
-    (Consignes globales "TOUS" OU destinées spécifiquement à son login).
+def fetch_consignes_cibles_agent(
+    site_id: str, agent_login: str, user_role: str = "AGENT_SECU"
+) -> list[dict]:
+    """Récupère les consignes actives du site.
+
+    - Pour un ADMIN / SUPERVISION : retourne TOUTES les consignes actives (Visibilité 360°).
+    - Pour un AGENT : filtre (Consignes globales "TOUS" OU ciblées sur son login).
     """
     now_iso = get_now_nc().isoformat()
     try:
@@ -71,8 +75,16 @@ def fetch_consignes_cibles_agent(site_id: str, agent_login: str) -> list[dict]:
         )
 
         raw_consignes = res_csg.data if res_csg.data else []
-        consignes_valides = []
 
+        # Bypass pour les rôles de supervision / administration
+        role_clean = str(user_role).upper().strip()
+        ROLES_BYPASS = ["ADMIN", "SUPER_ADMIN", "CHARGE_SURETE", "COS"]
+
+        if role_clean in ROLES_BYPASS:
+            return raw_consignes  # 🎯 Visibilité totale pour l'Admin
+
+        # Filtrage strict pour les agents de terrain
+        consignes_valides = []
         agent_login_clean = str(agent_login).lower().strip()
 
         for csg in raw_consignes:
@@ -84,93 +96,152 @@ def fetch_consignes_cibles_agent(site_id: str, agent_login: str) -> list[dict]:
 
         return consignes_valides
     except Exception as e:
-        print(f"⚠️ Erreur lors du chargement des consignes ciblées : {e}")
+        print(f"⚠️ Erreur lors du chargement des consignes : {e}")
         return []
 
 
-# --- FENÊTRE MODALE POP-UP DE VIGILANCE & CONSIGNES PRISE DE POSTE ---
-@st.dialog("📋 CONSIGNES SITE & VIGILANCE", width="large")
+# --- FENÊTRE MODALE POP-UP AVEC ONGLETS & ÉMARGEMENT INTELLIGENT ---
+@st.dialog("📋 CONSIGNES & ANOMALIES SITE", width="large")
 def show_consignes_dialog(
     site_id: str,
     agent_connecte: str,
     consignes_actives: list,
     anomalies_actives: list,
 ):
-    st.warning(f"**Site {site_id}**")
-    st.write(
-        "Veuillez prendre connaissance des consignes et points de vigilance"
-        " actifs :"
+    st.info(f"📍 **Site : {site_id}** | 👤 **Agent : {agent_connecte}**")
+    st.caption("Veuillez prendre connaissance des informations relatives au site.")
+
+    tab_cibles, tab_generales = st.tabs(
+        [
+            f"🎯 Consignes Ciblées ({len(consignes_actives)})",
+            f"🚨 Anomalies & Consignes Générales ({len(anomalies_actives)})",
+        ]
     )
 
-    with st.container(height=380):
-        if consignes_actives:
-            st.markdown("### 📌 **Consignes Particulières & Temporaires**")
-            for csg in consignes_actives:
-                badge = (
-                    "🔴 URGENT"
-                    if csg.get("priorite") == "URGENTE"
-                    else "🔵 CONSIGNE"
-                )
-                destinataires = csg.get("destinataires") or ["TOUS"]
-                badge_cible = (
-                    "🎯 (Ciblée)" if "TOUS" not in destinataires else ""
-                )
+    # ------------------------------------------------------------------
+    # ONGLET 1 : CONSIGNES PARTICULIÈRES & CIBLÉES
+    # ------------------------------------------------------------------
+    with tab_cibles:
+        with st.container(height=350):
+            if consignes_actives:
+                for csg in consignes_actives:
+                    priorite = csg.get("priorite", "NORMALE")
+                    badge_prio = "🔴 URGENT" if priorite == "URGENTE" else "🔵 CONSIGNE"
 
-                st.markdown(
-                    f"**{badge} [{csg['reference']}] {csg['titre']}"
-                    f" {badge_cible}**"
-                )
-                st.write(f"{csg['description']}")
-                st.caption(
-                    f"Valable jusqu'au {csg['fin_at'][:10]} | Publiée par"
-                    f" {csg['cree_par']}"
-                )
-                st.markdown("---")
+                    destinataires = csg.get("destinataires") or ["TOUS"]
+                    is_cibles = "TOUS" not in [str(d).upper() for d in destinataires]
+                    badge_cible = (
+                        "🎯 (Spécifique Agent)" if is_cibles else "🌐 (Globale)"
+                    )
 
-        if anomalies_actives:
-            st.markdown("### ⚠️ **Anomalies & Points de Vigilance**")
-            for ano in anomalies_actives:
-                badge = (
-                    "🔴"
-                    if ano.get("criticite") in ["CRITIQUE", "ELEVEE"]
-                    else "🟠"
-                )
-                st.markdown(f"{badge} **[{ano['reference']}] {ano['titre']}**")
-                st.caption(
-                    f"{ano['description']} *(Priorité : {ano['criticite']})*"
-                )
-                st.markdown("---")
+                    st.markdown(
+                        f"**{badge_prio} [{csg.get('reference', 'CSG')}]"
+                        f" {csg.get('titre', '')} {badge_cible}**"
+                    )
+                    st.write(f"{csg.get('description', '')}")
+                    st.caption(
+                        f"📅 Valable jusqu'au {csg.get('fin_at', '')[:10]} |"
+                        f" 👤 Rédigée par : {csg.get('cree_par', 'Admin')}"
+                    )
+                    st.markdown("---")
+            else:
+                st.success("✅ Aucune consigne particulière ciblée active.")
+
+    # ------------------------------------------------------------------
+    # ONGLET 2 : ANOMALIES & CONSIGNES GÉNÉRALES DU SITE
+    # ------------------------------------------------------------------
+    with tab_generales:
+        with st.container(height=350):
+            if anomalies_actives:
+                for ano in anomalies_actives:
+                    criticite = ano.get("criticite", "NORMALE")
+                    badge_crit = (
+                        "🔴 CRITIQUE"
+                        if criticite in ["CRITIQUE", "ELEVEE"]
+                        else "🟠 VIGILANCE"
+                    )
+
+                    st.markdown(
+                        f"**{badge_crit} [{ano.get('reference', 'ANO')}]"
+                        f" {ano.get('titre', '')}**"
+                    )
+                    st.write(f"{ano.get('description', '')}")
+                    st.caption(
+                        f"📍 Emplacement : {ano.get('localisation', 'Site')} |"
+                        f" 🚨 Statut : {ano.get('statut', 'EN_COURS')}"
+                    )
+                    st.markdown("---")
+            else:
+                st.success("✅ Aucune anomalie globale signalée sur le site.")
 
     st.markdown("---")
 
-    if st.button(
-        "✅ J'ai pris connaissance des consignes",
-        type="primary",
-        use_container_width=True,
-    ):
-        active_vac = get_active_vacation(site_id, agent_connecte)
-        if not active_vac:
-            vac_ref = generate_id("VAC")
-            now = get_now_nc().isoformat()
+    # 🎯 TEST DU CONTEXTE : La vacation est-elle déjà active ?
+    active_vac = get_active_vacation(site_id, agent_connecte)
 
-            payload = {
+    if not active_vac:
+        # === CAS A : PRISE DE POSTE (ÉMARGEMENT BDD OBLIGATOIRE) ===
+        if st.button(
+            "✅ J'émarge & je démarre mon service",
+            type="primary",
+            use_container_width=True,
+        ):
+            vac_ref = generate_id("VAC")
+            now_dt = get_now_nc()
+            now_iso = now_dt.isoformat()
+
+            # 1. Création de la vacation dans Supabase
+            payload_vac = {
                 "reference": vac_ref,
                 "site_id": site_id,
                 "agent_nom": agent_connecte,
-                "debut_at": now,
+                "debut_at": now_iso,
                 "statut": "EN_COURS",
             }
 
+            vac_id_creee = None
             try:
-                supabase.table("vacations").insert(payload).execute()
+                res_v = supabase.table("vacations").insert(payload_vac).execute()
+                if res_v.data:
+                    vac_id_creee = res_v.data[0].get("id")
+            except Exception as e:
+                st.error(f"Erreur création vacation : {e}")
+
+            # 2. Inscription unique de l'Émargement dans le Journal de la Main Courante
+            payload_emargement = {
+                "reference": generate_id("EMG"),
+                "vacation_id": vac_id_creee,
+                "site_id": site_id,
+                "agent_nom": agent_connecte,
+                "horodatage": now_iso,
+                "type_evenement": "Prise de consignes",
+                "description": (
+                    f"📋 Émargement Prise de Poste : Prise de connaissance"
+                    f" validée pour {len(consignes_actives)} consigne(s) et"
+                    f" {len(anomalies_actives)} anomalie(s)."
+                ),
+                "actions_menees": (
+                    "Lecture et validation explicite de prise de poste sur"
+                    " l'application ORBIS."
+                ),
+                "notified_authority": False,
+            }
+
+            try:
+                supabase.table("mc_evenements").insert(payload_emargement).execute()
                 st.toast(
-                    f"Prise de poste enregistrée (`{vac_ref}`). Service démarré !",
+                    f"Service démarré (`{vac_ref}`) & émargement enregistré !",
                     icon="🚀",
                 )
-            except Exception as e:
-                st.error(f"Erreur lors de la création de la vacation : {e}")
+            except Exception as err:
+                print(f"Erreur enregistrement émargement : {err}")
 
-        st.rerun()
+            st.rerun()
+
+    else:
+        # === CAS B : SIMPLE CONSULTATION EN COURS DE VACATION (SANS ÉMARGEMENT DUPLIQUÉ) ===
+        if st.button("✖️ Fermer la consultation", use_container_width=True):
+            st.rerun()
 
 
 # --- FENÊTRE MODALE POP-UP DE FIN DE POSTE & CLÔTURE DE VACATION ---
@@ -178,8 +249,7 @@ def show_consignes_dialog(
 def show_fin_de_poste_dialog(vac_id: str, site_id: str, agent_nom: str):
     st.warning("⚠️ **Confirmation de fin de service**")
     st.write(
-        "Êtes-vous sûr de vouloir clôturer officiellement la vacation en cours"
-        " ?"
+        "Êtes-vous sûr de vouloir clôturer officiellement la vacation en cours" " ?"
     )
     st.caption(
         "Cette action enregistrera l'événement de fin de poste et fermera le"
@@ -197,26 +267,28 @@ def show_fin_de_poste_dialog(vac_id: str, site_id: str, agent_nom: str):
             try:
                 # 1. Mise à jour de la vacation en statut CLOTUREE
                 if vac_id and len(str(vac_id)) == 36:
-                    supabase.table("vacations").update({
-                        "statut": "CLOTUREE",
-                        "fin_at": now_dt.isoformat(),
-                    }).eq("id", vac_id).execute()
+                    supabase.table("vacations").update(
+                        {
+                            "statut": "CLOTUREE",
+                            "fin_at": now_dt.isoformat(),
+                        }
+                    ).eq("id", vac_id).execute()
                 else:
-                    supabase.table("vacations").update({
-                        "statut": "CLOTUREE",
-                        "fin_at": now_dt.isoformat(),
-                    }).eq("site_id", site_id).in_(
+                    supabase.table("vacations").update(
+                        {
+                            "statut": "CLOTUREE",
+                            "fin_at": now_dt.isoformat(),
+                        }
+                    ).eq("site_id", site_id).in_(
                         "statut", ["OUVERTE", "EN_COURS"]
                     ).execute()
 
                 # 2. Inscription de l'événement de clôture
                 payload_fin = {
-                    "reference": (
-                        f"REF-FIN-VAC-{now_dt.strftime('%Y%m%d-%H%M%S')}"
+                    "reference": (f"REF-FIN-VAC-{now_dt.strftime('%Y%m%d-%H%M%S')}"),
+                    "vacation_id": (
+                        vac_id if (vac_id and len(str(vac_id)) == 36) else None
                     ),
-                    "vacation_id": vac_id
-                    if (vac_id and len(str(vac_id)) == 36)
-                    else None,
                     "site_id": site_id,
                     "agent_nom": agent_nom,
                     "horodatage": now_dt.isoformat(),
@@ -230,9 +302,7 @@ def show_fin_de_poste_dialog(vac_id: str, site_id: str, agent_nom: str):
                         " fermée (CLOTUREE)."
                     ),
                 }
-                supabase.table("mc_evenements").insert(
-                    payload_fin
-                ).execute()
+                supabase.table("mc_evenements").insert(payload_fin).execute()
 
                 st.toast(
                     "✅ Vacation clôturée avec succès en Base de Données !",
@@ -256,10 +326,12 @@ def show():
 
     site_actuel = st.session_state.get("site_actif", "DINUM")
     user_info = st.session_state.get(
-        "user_profile", {"full_name": "Éric KUTER", "login": "eric.kuter"}
+        "user_profile",
+        {"full_name": "Éric KUTER", "login": "eric.kuter", "role": "ADMIN"},
     )
     agent_connecte = user_info.get("full_name", "Éric KUTER")
     agent_login = user_info.get("login", "")
+    user_role = user_info.get("role", "AGENT_SECU")
 
     # 1. Vérification de la vacation active dans Supabase
     active_vacation = get_active_vacation(site_actuel, agent_connecte)
@@ -268,17 +340,13 @@ def show():
     # CAS 1 : AUCUNE VACATION EN COURS -> PRISE DE POSTE
     # ------------------------------------------------------------------
     if active_vacation is None:
-        st.warning(
-            f"⚠️ Aucune vacation ouverte pour le site **{site_actuel}**."
-        )
+        st.warning(f"⚠️ Aucune vacation ouverte pour le site **{site_actuel}**.")
 
         col_start, _ = st.columns([1, 2])
         with col_start:
-            if st.button(
-                "🚀 Prise de poste", type="primary", use_container_width=True
-            ):
+            if st.button("🚀 Prise de poste", type="primary", use_container_width=True):
                 consignes = fetch_consignes_cibles_agent(
-                    site_actuel, agent_login
+                    site_actuel, agent_login, user_role
                 )
 
                 try:
@@ -317,10 +385,7 @@ def show():
                         )
                         st.rerun()
                     except Exception as e:
-                        st.error(
-                            "Erreur lors de la création de la vacation :"
-                            f" {e}"
-                        )
+                        st.error("Erreur lors de la création de la vacation :" f" {e}")
 
     # ------------------------------------------------------------------
     # CAS 2 : VACATION EN COURS -> SERVICE ACTIF
@@ -330,7 +395,7 @@ def show():
         vac_ref = active_vacation["reference"]
         st.session_state["vacation_id"] = vac_id
 
-        res_c = fetch_consignes_cibles_agent(site_actuel, agent_login)
+        res_c = fetch_consignes_cibles_agent(site_actuel, agent_login, user_role)
         try:
             res_a = (
                 supabase.table("anomalies")
@@ -346,7 +411,7 @@ def show():
 
         tot_alerts = len(res_c) + len(res_a)
 
-        # En-tête épuré avec bouton de Fin de poste
+        # En-tête épuré avec bouton de Consignes & Fin de poste
         col_info, col_alert, col_fin = st.columns([3, 1.2, 1])
         with col_info:
             st.success(
@@ -360,9 +425,7 @@ def show():
                     f"📋 Consignes ({tot_alerts})",
                     use_container_width=True,
                 ):
-                    show_consignes_dialog(
-                        site_actuel, agent_connecte, res_c, res_a
-                    )
+                    show_consignes_dialog(site_actuel, agent_connecte, res_c, res_a)
             else:
                 st.caption("✅ Aucune consigne active")
 
@@ -373,9 +436,7 @@ def show():
                 use_container_width=True,
                 help="Clôture officiellement la vacation en cours sur ce site.",
             ):
-                show_fin_de_poste_dialog(
-                    vac_id, site_actuel, agent_connecte
-                )
+                show_fin_de_poste_dialog(vac_id, site_actuel, agent_connecte)
 
         st.markdown("---")
 
@@ -453,8 +514,7 @@ def show():
                                 event_payload
                             ).execute()
                             st.toast(
-                                f"Événement {event_ref} enregistré dans"
-                                " Supabase !",
+                                f"Événement {event_ref} enregistré dans" " Supabase !",
                                 icon="✅",
                             )
 
@@ -544,8 +604,7 @@ def show():
                     st.dataframe(df, use_container_width=True)
                 else:
                     st.info(
-                        "Aucun événement saisi pour le moment dans cette"
-                        " vacation."
+                        "Aucun événement saisi pour le moment dans cette" " vacation."
                     )
             except Exception as e:
                 st.error(f"Erreur de chargement du journal : {e}")
