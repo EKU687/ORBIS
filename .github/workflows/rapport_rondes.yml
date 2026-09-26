@@ -1,9 +1,14 @@
-name: 📊 Rapport Quotidien des Rondes de Nuit (ORBIS V3)
+name: 📊 Rapport Automatique des Rondes (ORBIS V3)
 
 on:
   schedule:
-    # 19:00 UTC = 06:00 du matin heure de Nouméa (Pacific/Noumea, UTC+11)
+    # 1. Rapport de Nuit à 06:00 NC (19:00 UTC la veille)
     - cron: '0 19 * * *'
+    
+    # 2. Rapport de Journée (WE & Fériés) à 20:00 NC (09:00 UTC le jour même)
+    - cron: '0 9 * * *'
+
+  # Permet un déclenchement manuel depuis l'interface GitHub
   workflow_dispatch:
 
 jobs:
@@ -25,7 +30,7 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install supabase pandas holidays streamlit tenacity
 
-      - name: 🚀 Exécution du script de rapport de nuit
+      - name: 🚀 Exécution du script de rapport (Nuit & Journée)
         env:
           PYTHONPATH: .
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -33,6 +38,7 @@ jobs:
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
         run: |
           python utils/rapport_rondes.py
