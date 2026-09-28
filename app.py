@@ -2,7 +2,8 @@
 # APPLICATION : MAIN COURANTE V3 - PC GARDE (ORBIS)
 # Inclus : Gestion SSO Portail HUB, Support YubiKey/Password via SDK,
 #          Moniteur Mouvements direct, Horodatage Pacific/Noumea (UTC+11),
-#          Module Présences sur site (AEOS + ORBIS), Déconnexion neutre.
+#          Module Présences sur site (AEOS + ORBIS), Déconnexion neutre,
+#          Référentiel Documentaire OPERA (Procédures & Protocoles).
 # =========================================================================
 import datetime
 from pathlib import Path
@@ -14,6 +15,43 @@ import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from config import APP_AUTHOR, APP_DATE, APP_ENV, APP_NAME, APP_SUBTITLE, APP_VERSION
+from utils.opera_bridge import (
+    afficher_section_deltas_opera_dans_modale,
+    verifier_deltas_opera_non_lus,
+)
+
+# ---------------------------------------------------------------------
+# CONTRÔLE CONTINU : AVERTIR L'AGENT EN COURS DE SERVICE
+# ---------------------------------------------------------------------
+if st.session_state.get("vacation_ouverte"):
+    deltas_cours_de_poste = verifier_deltas_opera_non_lus(
+        supabase_client=supabase,
+        site_id=st.session_state.get("site_id"),
+        agent_login=st.session_state.get("user_login"),
+    )
+
+    if deltas_cours_de_poste:
+        # 1. Bandeau rouge d'alerte immédiat en haut de la Main Courante
+        st.error(
+            f"🚨 **ALERTE SÛRETÉ URGENTE ({len(deltas_cours_de_poste)})** : "
+            "Une nouvelle procédure ou consigne de sûreté a été publiée par la sûreté !"
+        )
+
+        # 2. Modale / Expander prioritaire d'émargement en cours de poste
+        with st.expander(
+            "📋 PRENDRE CONNAISSANCE ET ÉMARGER LA NOUVELLE CONSIGNE IMMÉDIATEMENT",
+            expanded=True,
+        ):
+            afficher_section_deltas_opera_dans_modale(
+                supabase_client=supabase,
+                deltas_non_lus=deltas_cours_de_poste,
+                agent_login=st.session_state.get("user_login"),
+                agent_nom=st.session_state.get(
+                    "full_name", st.session_state.get("user_login")
+                ),
+                site_id=st.session_state.get("site_id"),
+                vacation_ref=st.session_state.get("vacation_ref"),
+            )
 
 # --- CONFIGURATION DU FUSEAU HORAIRE NOUVELLE-CALÉDONIE (UTC+11) ---
 TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
@@ -230,6 +268,7 @@ else:
 # =========================================================================
 menu_options = {
     "📝 Main Courante": "main_courante",
+    "📂 Référentiel Documentaire": "referentiel_doc",  # 👈 Bibliothèque de référence OPERA (Lecture seule)
 }
 
 ROLES_REGISTRE = ["CHARGE_SURETE", "ADMIN", "COS", "SUPER_ADMIN"]
@@ -242,7 +281,7 @@ menu_options.update(
         "👥 Visiteurs Attendus": "visiteurs_attendus",
         "🏢 Présences sur site": "evacuation_incendie",
         "🔦 Suivi des Rondes": "suivi_rondes",
-        "🚨 Anomalies & Consignes Générales": "anomalies",  # 🎯 Libellé clarifié (Ex: Anomalies & Vigilance)
+        "🚨 Anomalies & Consignes Générales": "anomalies",
         label_badges: "badges",
         "🚗 Gestion des Permis": "permis",
     }
@@ -250,9 +289,7 @@ menu_options.update(
 
 ROLES_ADMIN_ONLY = ["ADMIN", "SUPER_ADMIN", "CHARGE_SURETE", "COS"]
 if role_actif in ROLES_ADMIN_ONLY:
-    menu_options["🎯 Consignes Ciblées (Admin)"] = (
-        "consignes_admin"  # 🎯 Libellé clarifié (Ex: Consignes Admin)
-    )
+    menu_options["🎯 Consignes Ciblées (Admin)"] = "consignes_admin"
     menu_options["🛡️ Hypervision COS"] = "hypervision"
 
 menu_options["🔍 Recherche Prestataires"] = "recherche_prestataires"
@@ -298,6 +335,11 @@ if module_actif == "main_courante":
     from views import main_courante
 
     main_courante.show()
+
+elif module_actif == "referentiel_doc":
+    from views.procedures_view import afficher_page_procedures_opera
+
+    afficher_page_procedures_opera(supabase_client=supabase, site_courant=site_selected)
 
 elif module_actif == "registre":
     from views import registre

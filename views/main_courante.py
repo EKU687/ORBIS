@@ -1,8 +1,11 @@
 # =========================================================================
 # MODULE : MAIN COURANTE SERVICE TERRAIN (views/main_courante.py)
 # Inclus : Vacation site, pop-up de prise de poste avec filtrage dynamique
-#          des consignes (Globales & Ciblées par agent), émargement unique,
-#          saisie d'événements, journal BDD et clôture de vacation.
+#          des consignes (Globales & Ciblées par agent), deltas OPERA,
+#          émargement unique, saisie d'événements, journal BDD et clôture.
+#
+# Auteur : Éric KUTER
+# Mise à jour : 28/09/2026 (Intégration Passerelle OPERA Deltas v1.0)
 # =========================================================================
 import datetime
 from pathlib import Path
@@ -18,6 +21,11 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.db_client import supabase
 from utils.email_sender import send_alert_email
+from utils.opera_bridge import (
+    afficher_section_deltas_opera_dans_modale,
+    enregistrer_emargement_procedure_opera,
+    verifier_deltas_opera_non_lus,
+)
 
 # Fuseau horaire Nouvelle-Calédonie (UTC+11)
 TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
@@ -29,7 +37,7 @@ def get_now_nc() -> datetime.datetime:
 
 
 def generate_id(prefix: str) -> str:
-    """Génère un identifiant horodaté unique basé sur l'heure locale NC (ex: VAC-20260826-085500)."""
+    """Génère un identifiant horodaté unique basé sur l'heure locale NC (ex: VAC-20260928-085500)."""
     now = get_now_nc()
     return f"{prefix}-{now.strftime('%Y%m%d-%H%M%S')}"
 
@@ -100,26 +108,77 @@ def fetch_consignes_cibles_agent(
         return []
 
 
-# --- FENÊTRE MODALE POP-UP AVEC ONGLETS & ÉMARGEMENT INTELLIGENT ---
-@st.dialog("📋 CONSIGNES & ANOMALIES SITE", width="large")
+# --- FENÊTRE MODALE POP-UP AVEC ONGLETS, DELTAS OPERA & ÉMARGEMENT INTELLIGENT ---
+@st.dialog("📋 CONSIGNES, ANOMALIES & PROCÉDURES SITE", width="large")
 def show_consignes_dialog(
     site_id: str,
     agent_connecte: str,
+    agent_login: str,
     consignes_actives: list,
     anomalies_actives: list,
+    deltas_opera: list,
 ):
-    st.info(f"📍 **Site : {site_id}** | 👤 **Agent : {agent_connecte}**")
-    st.caption("Veuillez prendre connaissance des informations relatives au site.")
+    st.info(
+        f"📍 **Site : {site_id}** | 👤 **Agent : {agent_connecte}** (`{agent_login}`)"
+    )
+    st.caption(
+        "Veuillez prendre connaissance des informations relatives au site avant de poursuivre."
+    )
 
-    tab_cibles, tab_generales = st.tabs(
+    tab_opera, tab_cibles, tab_generales = st.tabs(
         [
+            f"🚨 Procédures OPERA ({len(deltas_opera)})",
             f"🎯 Consignes Ciblées ({len(consignes_actives)})",
-            f"🚨 Anomalies & Consignes Générales ({len(anomalies_actives)})",
+            f"🚨 Anomalies & Directives ({len(anomalies_actives)})",
         ]
     )
 
     # ------------------------------------------------------------------
-    # ONGLET 1 : CONSIGNES PARTICULIÈRES & CIBLÉES
+    # ONGLET 1 : DELTAS PROCÉDURES & RONDES OPERA (Nouveauté Sûreté)
+    # ------------------------------------------------------------------
+    tous_deltas_coch_es = True
+    with tab_opera:
+        with st.container(height=350):
+            if deltas_opera:
+                st.warning(
+                    "⚠️ **Des procédures ou fiches réflexes de rondes ont été mises à jour par la Sûreté (OPERA).**"
+                )
+                for notif in deltas_opera:
+                    proc_info = notif.get("opera_procedures", {})
+                    code_doc = proc_info.get("code_doc", "PROC")
+                    titre_proc = proc_info.get("titre", "Procédure Opérationnelle")
+                    version_cible = notif.get("version_cible", "1.0")
+                    resume_delta = notif.get("resume_delta", "Mise à jour de la fiche.")
+
+                    with st.container(border=True):
+                        st.markdown(
+                            f"**📋 [{code_doc}] {titre_proc} — Version {version_cible}**"
+                        )
+
+                        st.markdown(
+                            f"""
+                            <div style="background-color: #e8f4f8; border-left: 5px solid #0288d1; padding: 10px; border-radius: 4px; margin: 8px 0; font-size: 0.95em;">
+                                <b style="color: #01579b;">📌 Éléments modifiés / Nouveaux points de contrôle :</b><br>
+                                <span style="color: #212121;">{resume_delta}</span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+                        cle_chk = f"chk_opera_emarge_{notif['id']}"
+                        is_checked = st.checkbox(
+                            f"J'atteste avoir lu et assimilé la modification (v{version_cible})",
+                            key=cle_chk,
+                        )
+                        if not is_checked:
+                            tous_deltas_coch_es = False
+            else:
+                st.success(
+                    "✅ Aucune modification de procédure OPERA en attente d'émargement."
+                )
+
+    # ------------------------------------------------------------------
+    # ONGLET 2 : CONSIGNES PARTICULIÈRES & CIBLÉES (ORBIS)
     # ------------------------------------------------------------------
     with tab_cibles:
         with st.container(height=350):
@@ -148,7 +207,7 @@ def show_consignes_dialog(
                 st.success("✅ Aucune consigne particulière ciblée active.")
 
     # ------------------------------------------------------------------
-    # ONGLET 2 : ANOMALIES & CONSIGNES GÉNÉRALES DU SITE
+    # ONGLET 3 : ANOMALIES & CONSIGNES GÉNÉRALES DU SITE (ORBIS)
     # ------------------------------------------------------------------
     with tab_generales:
         with st.container(height=350):
@@ -186,11 +245,32 @@ def show_consignes_dialog(
             type="primary",
             use_container_width=True,
         ):
+            # Contrôle de sécurité : blocage si des deltas OPERA ne sont pas cochés
+            if deltas_opera and not tous_deltas_coch_es:
+                st.error(
+                    "⚠️ **ÉMARGEMENT OBLIGATOIRE :** Vous devez cocher la prise de connaissance "
+                    "de TOUTES les modifications de procédures OPERA (Onglet 1) avant de démarrer."
+                )
+                st.stop()
+
             vac_ref = generate_id("VAC")
             now_dt = get_now_nc()
             now_iso = now_dt.isoformat()
 
-            # 1. Création de la vacation dans Supabase
+            # 1. Enregistrement des émargements individuels OPERA dans opera_emargements
+            if deltas_opera:
+                for notif in deltas_opera:
+                    enregistrer_emargement_procedure_opera(
+                        supabase_client=supabase,
+                        procedure_id=notif["procedure_id"],
+                        version_emargee=notif["version_cible"],
+                        agent_login=agent_login,
+                        agent_nom=agent_connecte,
+                        site_id=site_id,
+                        vacation_ref=vac_ref,
+                    )
+
+            # 2. Création de la vacation dans Supabase
             payload_vac = {
                 "reference": vac_ref,
                 "site_id": site_id,
@@ -207,7 +287,7 @@ def show_consignes_dialog(
             except Exception as e:
                 st.error(f"Erreur création vacation : {e}")
 
-            # 2. Inscription unique de l'Émargement dans le Journal de la Main Courante
+            # 3. Inscription unique de l'Émargement dans le Journal de la Main Courante
             payload_emargement = {
                 "reference": generate_id("EMG"),
                 "vacation_id": vac_id_creee,
@@ -217,8 +297,9 @@ def show_consignes_dialog(
                 "type_evenement": "Prise de consignes",
                 "description": (
                     f"📋 Émargement Prise de Poste : Prise de connaissance"
-                    f" validée pour {len(consignes_actives)} consigne(s) et"
-                    f" {len(anomalies_actives)} anomalie(s)."
+                    f" validée pour {len(consignes_actives)} consigne(s), "
+                    f"{len(anomalies_actives)} anomalie(s) et "
+                    f"{len(deltas_opera)} procédure(s) OPERA."
                 ),
                 "actions_menees": (
                     "Lecture et validation explicite de prise de poste sur"
@@ -248,9 +329,7 @@ def show_consignes_dialog(
 @st.dialog("🛑 CLÔTURE DU POSTE DE GARDE")
 def show_fin_de_poste_dialog(vac_id: str, site_id: str, agent_nom: str):
     st.warning("⚠️ **Confirmation de fin de service**")
-    st.write(
-        "Êtes-vous sûr de vouloir clôturer officiellement la vacation en cours" " ?"
-    )
+    st.write("Êtes-vous sûr de vouloir clôturer officiellement la vacation en cours ?")
     st.caption(
         "Cette action enregistrera l'événement de fin de poste et fermera le"
         " registre de cette vacation dans Supabase."
@@ -330,8 +409,11 @@ def show():
         {"full_name": "Éric KUTER", "login": "eric.kuter", "role": "ADMIN"},
     )
     agent_connecte = user_info.get("full_name", "Éric KUTER")
-    agent_login = user_info.get("login", "")
+    agent_login = user_info.get("login", "eric.kuter")
     user_role = user_info.get("role", "AGENT_SECU")
+
+    # Récupération de l'ID BDD du site pour la table OPERA si nécessaire
+    site_id_opera = st.session_state.get("site_id_opera", site_actuel)
 
     # 1. Vérification de la vacation active dans Supabase
     active_vacation = get_active_vacation(site_actuel, agent_connecte)
@@ -361,9 +443,21 @@ def show():
                 except Exception:
                     anomalies = []
 
-                if consignes or anomalies:
+                # Récupération des deltas de procédures OPERA non lus par cet agent
+                deltas_opera = verifier_deltas_opera_non_lus(
+                    supabase_client=supabase,
+                    site_id=site_id_opera,
+                    agent_login=agent_login,
+                )
+
+                if consignes or anomalies or deltas_opera:
                     show_consignes_dialog(
-                        site_actuel, agent_connecte, consignes, anomalies
+                        site_actuel,
+                        agent_connecte,
+                        agent_login,
+                        consignes,
+                        anomalies,
+                        deltas_opera,
                     )
                 else:
                     vac_ref = generate_id("VAC")
@@ -380,12 +474,11 @@ def show():
                     try:
                         supabase.table("vacations").insert(payload).execute()
                         st.success(
-                            f"Prise de poste enregistrée (`{vac_ref}`). Service"
-                            " démarré !"
+                            f"Prise de poste enregistrée (`{vac_ref}`). Service démarré !"
                         )
                         st.rerun()
                     except Exception as e:
-                        st.error("Erreur lors de la création de la vacation :" f" {e}")
+                        st.error(f"Erreur lors de la création de la vacation : {e}")
 
     # ------------------------------------------------------------------
     # CAS 2 : VACATION EN COURS -> SERVICE ACTIF
@@ -409,7 +502,13 @@ def show():
         except Exception:
             res_a = []
 
-        tot_alerts = len(res_c) + len(res_a)
+        deltas_opera = verifier_deltas_opera_non_lus(
+            supabase_client=supabase,
+            site_id=site_id_opera,
+            agent_login=agent_login,
+        )
+
+        tot_alerts = len(res_c) + len(res_a) + len(deltas_opera)
 
         # En-tête épuré avec bouton de Consignes & Fin de poste
         col_info, col_alert, col_fin = st.columns([3, 1.2, 1])
@@ -425,7 +524,14 @@ def show():
                     f"📋 Consignes ({tot_alerts})",
                     use_container_width=True,
                 ):
-                    show_consignes_dialog(site_actuel, agent_connecte, res_c, res_a)
+                    show_consignes_dialog(
+                        site_actuel,
+                        agent_connecte,
+                        agent_login,
+                        res_c,
+                        res_a,
+                        deltas_opera,
+                    )
             else:
                 st.caption("✅ Aucune consigne active")
 
@@ -514,7 +620,7 @@ def show():
                                 event_payload
                             ).execute()
                             st.toast(
-                                f"Événement {event_ref} enregistré dans" " Supabase !",
+                                f"Événement {event_ref} enregistré dans Supabase !",
                                 icon="✅",
                             )
 
@@ -603,8 +709,6 @@ def show():
                     )
                     st.dataframe(df, use_container_width=True)
                 else:
-                    st.info(
-                        "Aucun événement saisi pour le moment dans cette" " vacation."
-                    )
+                    st.info("Aucun événement saisi pour le moment dans cette vacation.")
             except Exception as e:
                 st.error(f"Erreur de chargement du journal : {e}")
