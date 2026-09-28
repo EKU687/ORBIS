@@ -1,7 +1,8 @@
 # =========================================================================
 # MODULE : SUIVI & ÉMARGEMENT DES RONDES DE SÛRETÉ (views/suivi_rondes.py)
 # Inclus : Génération dynamique des rondes, décalage aléatoire (0-10 min),
-#          fenêtre d'émargement active de 30 minutes et enregistrement BDD.
+#          fenêtre d'émargement active de 30 minutes, enregistrement BDD,
+#          affichage découplé en deux onglets et conversion horodatage NC.
 # =========================================================================
 import datetime
 import hashlib
@@ -43,6 +44,25 @@ def get_now_nc() -> datetime.datetime:
     return datetime.datetime.now(TZ_NC)
 
 
+def formatter_heure_nc(iso_str: str) -> str:
+    """
+    Convertit une chaîne horodatage ISO de la BDD vers l'heure locale NC (HH:MM).
+    Gère les chaînes avec/sans fuseau horodate.
+    """
+    if not iso_str:
+        return "--:--"
+    try:
+        dt = datetime.datetime.fromisoformat(str(iso_str))
+        if dt.tzinfo is None:
+            # Si pas de TZ dans la BDD, on suppose que c'est du UTC
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        dt_nc = dt.astimezone(TZ_NC)
+        return dt_nc.strftime("%H:%M")
+    except Exception:
+        # Fallback de découpe directe si le parsing échoue
+        return str(iso_str)[11:16]
+
+
 def est_jour_non_ouvre(date_cible: datetime.date) -> tuple[bool, str]:
     """Détermine si la date est un jour non travaillé (Week-End ou Férié Nouvelle-Calédonie)."""
     if date_cible.weekday() in [5, 6]:
@@ -65,55 +85,63 @@ def generer_grille_rondes_du_jour(date_cible: datetime.date) -> list[dict]:
 
     # BLOC 1 : SOIRÉE & DÉBUT DE NUIT (20:00 -> 23:00)
     if not est_non_ouvre:
-        grille.append({
-            "heure_cible": "20:00",
-            "type": "Fermeture Globale (Int. & Ext.)",
-            "frequence": "Ponctuelle (Semaine)",
-        })
+        grille.append(
+            {
+                "heure_cible": "20:00",
+                "type": "Fermeture Globale (Int. & Ext.)",
+                "frequence": "Ponctuelle (Semaine)",
+            }
+        )
     else:
-        grille.append({
-            "heure_cible": "20:00",
-            "type": "Ronde Extérieure (Périmètre)",
-            "frequence": f"Nuit {motif}",
-        })
+        grille.append(
+            {
+                "heure_cible": "20:00",
+                "type": "Ronde Extérieure (Périmètre)",
+                "frequence": f"Nuit {motif}",
+            }
+        )
 
     for h in ["21:00", "22:00", "23:00"]:
         h_int = int(h.split(":")[0])
         est_ext = h_int % 2 == 0
-        type_str = (
-            "Ronde Intérieure & Extérieure" if est_ext else "Ronde Intérieure"
+        type_str = "Ronde Intérieure & Extérieure" if est_ext else "Ronde Intérieure"
+        grille.append(
+            {
+                "heure_cible": h,
+                "type": type_str,
+                "frequence": "Nuit (Int. 1h / Ext. 2h)",
+            }
         )
-        grille.append({
-            "heure_cible": h,
-            "type": type_str,
-            "frequence": "Nuit (Int. 1h / Ext. 2h)",
-        })
 
     # BLOC 2 : MILIEU & FIN DE NUIT (00:00 -> 05:00)
     for h in ["00:00", "01:00", "02:00", "03:00", "04:00"]:
         h_int = int(h.split(":")[0])
         est_ext = h_int % 2 == 0
-        type_str = (
-            "Ronde Intérieure & Extérieure" if est_ext else "Ronde Intérieure"
+        type_str = "Ronde Intérieure & Extérieure" if est_ext else "Ronde Intérieure"
+        grille.append(
+            {
+                "heure_cible": h,
+                "type": type_str,
+                "frequence": "Nuit (Int. 1h / Ext. 2h)",
+            }
         )
-        grille.append({
-            "heure_cible": h,
-            "type": type_str,
-            "frequence": "Nuit (Int. 1h / Ext. 2h)",
-        })
 
     if not est_non_ouvre:
-        grille.append({
-            "heure_cible": "05:00",
-            "type": "Ouverture du Site & Contrôle Périmètre",
-            "frequence": "Ponctuelle (Semaine)",
-        })
+        grille.append(
+            {
+                "heure_cible": "05:00",
+                "type": "Ouverture du Site & Contrôle Périmètre",
+                "frequence": "Ponctuelle (Semaine)",
+            }
+        )
     else:
-        grille.append({
-            "heure_cible": "05:00",
-            "type": "Ronde Extérieure (Périmètre)",
-            "frequence": f"Nuit {motif}",
-        })
+        grille.append(
+            {
+                "heure_cible": "05:00",
+                "type": "Ronde Extérieure (Périmètre)",
+                "frequence": f"Nuit {motif}",
+            }
+        )
 
     # BLOC 3 : JOURNÉE COMPLÈTE (06:00 -> 19:00) - Uniquement Week-End / Férié
     if est_non_ouvre:
@@ -125,11 +153,13 @@ def generer_grille_rondes_du_jour(date_cible: datetime.date) -> list[dict]:
                 if est_ext
                 else "Ronde Journée (Intérieure)"
             )
-            grille.append({
-                "heure_cible": h_str,
-                "type": type_str,
-                "frequence": f"Journée {motif}",
-            })
+            grille.append(
+                {
+                    "heure_cible": h_str,
+                    "type": type_str,
+                    "frequence": f"Journée {motif}",
+                }
+            )
 
     return grille
 
@@ -157,8 +187,6 @@ def calculer_statut_creneau(
     )
 
     # 🎯 CORRECTION PASSAGE À MINUIT :
-    # Si la ronde est prévue entre 00h00 et 05h00 MAIS qu'on consulte l'application
-    # durant la soirée de la veille (ex: entre 20h00 et 23h59), alors la ronde appartient au lendemain.
     if h_target <= 5 and now_datetime.hour >= 20:
         dt_base += datetime.timedelta(days=1)
 
@@ -245,9 +273,7 @@ def show():
     st.title("🔦 Suivi & Émargement des Rondes de Sûreté")
 
     site_actuel = st.session_state.get("site_actif", "DINUM")
-    user_info = st.session_state.get(
-        "user_profile", {"full_name": "Agent PC Security"}
-    )
+    user_info = st.session_state.get("user_profile", {"full_name": "Agent PC Security"})
     agent_connecte = user_info["full_name"]
 
     vac_id = get_or_create_vacation_id(site_actuel, agent_connecte)
@@ -257,7 +283,13 @@ def show():
     heure_courante = now_nc.hour
 
     nom_jour_fr = [
-        "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"
+        "Lundi",
+        "Mardi",
+        "Mercredi",
+        "Jeudi",
+        "Vendredi",
+        "Samedi",
+        "Dimanche",
     ][today_dt.weekday()]
 
     st.caption(
@@ -303,15 +335,35 @@ def show():
     except Exception as e:
         st.error(f"❌ Erreur de lecture BDD Rondes : {e}")
 
-    # 2. Affichage des cartes de rondes avec décalage aléatoire et fenêtre de 30 min
+    # 2. Séparation des rondes en deux catégories
+    rondes_a_venir = []
+    rondes_effectuees = []
+
     for ronde in grille_rondes:
+        h_target = ronde["heure_cible"]
+        ref_cle = f"REF-RONDE-{today_dt.strftime('%Y%m%d')}-{h_target}"
+        if ref_cle in rondes_validees:
+            rondes_effectuees.append(ronde)
+        else:
+            rondes_a_venir.append(ronde)
+
+    # 3. Création des Onglets
+    tab_a_faire, tab_effectuees = st.tabs(
+        [
+            f"⏳ Rondes à venir ({len(rondes_a_venir)})",
+            f"✅ Rondes effectuées ({len(rondes_effectuees)})",
+        ]
+    )
+
+    # Fonction utilitaire d'affichage des cartes de rondes
+    def render_carte_ronde(ronde: dict):
         h_target = ronde["heure_cible"]
         type_ronde = ronde["type"]
         ref_cle = f"REF-RONDE-{today_dt.strftime('%Y%m%d')}-{h_target}"
 
         est_faite = ref_cle in rondes_validees
-        statut_code, bouton_actif, h_debut_genere, min_restantes = calculer_statut_creneau(
-            h_target, now_nc, est_faite
+        statut_code, bouton_actif, h_debut_genere, min_restantes = (
+            calculer_statut_creneau(h_target, now_nc, est_faite)
         )
 
         with st.container(border=True):
@@ -320,21 +372,26 @@ def show():
             with col_horaire:
                 st.markdown(f"🕒 **Créneau : {h_target}**")
                 if not est_faite and h_debut_genere:
-                    st.caption(f"Début aléatoire : **{h_debut_genere}**\n\n*(Fenêtre : 30 min)*")
+                    st.caption(
+                        f"Début aléatoire : **{h_debut_genere}**\n\n*(Fenêtre : 30 min)*"
+                    )
                 else:
                     st.caption("Tolérance : 30 min active")
 
             with col_desc:
                 st.markdown(f"🏃 **{type_ronde}**")
-                
+
                 if est_faite:
                     ev_info = rondes_validees[ref_cle]
-                    dt_valide = ev_info.get("horodatage", "")[11:16]
+                    # 🕒 CONVERSION EXPLICITE FUSEAU NC (UTC+11)
+                    dt_valide = formatter_heure_nc(ev_info.get("horodatage", ""))
                     agent_nom = ev_info.get("agent_nom", "Agent")
                     st.success(f"✅ **Effectuée à {dt_valide}** par {agent_nom}")
                     st.caption(f"Obs : {ev_info.get('description', 'RAS')}")
                 elif statut_code == "ACTIF":
-                    st.success(f"🟢 **Créneau ACTIF (Démarre à {h_debut_genere})** — **{min_restantes} min restantes**")
+                    st.success(
+                        f"🟢 **Créneau ACTIF (Démarre à {h_debut_genere})** — **{min_restantes} min restantes**"
+                    )
                 elif statut_code == "FUTUR":
                     st.info(f"⚪ **Ronde à venir à {h_debut_genere}** (Bouton inactif)")
                 elif statut_code == "DEPASSE":
@@ -346,7 +403,9 @@ def show():
                         with st.popover(
                             f"📝 Émarger ronde {h_target}", use_container_width=True
                         ):
-                            st.markdown(f"**Émargement Ronde {h_target} (Début {h_debut_genere})**")
+                            st.markdown(
+                                f"**Émargement Ronde {h_target} (Début {h_debut_genere})**"
+                            )
 
                             observation = st.text_input(
                                 "Observations / Consignes :",
@@ -406,9 +465,7 @@ def show():
 
                                     if has_anomalie:
                                         payload_anomalie = {
-                                            "reference": (
-                                                f"REF-ANO-RONDE-{ref_time}"
-                                            ),
+                                            "reference": (f"REF-ANO-RONDE-{ref_time}"),
                                             "vacation_id": vac_id,
                                             "site_id": site_actuel,
                                             "agent_nom": agent_connecte,
@@ -424,7 +481,7 @@ def show():
                                                 " Sûreté informée."
                                                 if notif_surete
                                                 else "Consigné depuis le module"
-                                                     " Rondes."
+                                                " Rondes."
                                             ),
                                         }
                                         supabase.table("mc_evenements").insert(
@@ -473,3 +530,25 @@ def show():
                             disabled=True,
                             use_container_width=True,
                         )
+
+    # 4. Rendu de l'Onglet 1 : Rondes à venir
+    with tab_a_faire:
+        if rondes_a_venir:
+            for ronde in rondes_a_venir:
+                render_carte_ronde(ronde)
+        else:
+            st.success(
+                "🎉 Toutes les rondes programmées pour cette vacation ont été effectuées !"
+            )
+
+    # 5. Rendu de l'Onglet 2 : Rondes effectuées
+    with tab_effectuees:
+        if rondes_effectuees:
+            for ronde in rondes_effectuees:
+                render_carte_ronde(ronde)
+        else:
+            st.info("ℹ️ Aucune ronde n'a encore été effectuée durant cette vacation.")
+
+
+if __name__ == "__main__":
+    show()
