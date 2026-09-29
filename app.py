@@ -3,7 +3,7 @@
 # Inclus : Gestion SSO Portail HUB, Support YubiKey/Password via SDK,
 #          Moniteur Mouvements direct, Horodatage Pacific/Noumea (UTC+11),
 #          Module Présences sur site (AEOS + ORBIS), Déconnexion neutre,
-#          Référentiel Documentaire OPERA (Procédures & Protocoles).
+#          Référentiel Documentaire OPERA, Messagerie Interne & Pop-up Alerte.
 # =========================================================================
 import datetime
 from pathlib import Path
@@ -20,8 +20,35 @@ from utils.opera_bridge import (
     verifier_deltas_opera_non_lus,
 )
 
+# --- FIX DES CHEMINS PYTHON ET IMPORTS SOCLE ---
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.db_client import supabase
+
+# --- CONFIGURATION DU FUSEAU HORAIRE NOUVELLE-CALÉDONIE (UTC+11) ---
+TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
+
+# Ping automatique toutes les 60 secondes pour maintenir la session et rafraîchir les alertes
+st_autorefresh(interval=60 * 1000, key="keep_alive_main_courante")
+
+
+def get_now_nc() -> datetime.datetime:
+    """Retourne la date et l'heure actuelles en Nouvelle-Calédonie."""
+    return datetime.datetime.now(TZ_NC)
+
+
+# --- CONFIGURATION DE LA PAGE STREAMLIT ---
+st.set_page_config(
+    page_title="ORBIS - Main Courante V3",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
 # ---------------------------------------------------------------------
-# CONTRÔLE CONTINU : AVERTIR L'AGENT EN COURS DE SERVICE
+# CONTRÔLE CONTINU OPERA : AVERTIR L'AGENT EN COURS DE SERVICE
 # ---------------------------------------------------------------------
 if st.session_state.get("vacation_ouverte"):
     deltas_cours_de_poste = verifier_deltas_opera_non_lus(
@@ -31,13 +58,11 @@ if st.session_state.get("vacation_ouverte"):
     )
 
     if deltas_cours_de_poste:
-        # 1. Bandeau rouge d'alerte immédiat en haut de la Main Courante
         st.error(
             f"🚨 **ALERTE SÛRETÉ URGENTE ({len(deltas_cours_de_poste)})** : "
             "Une nouvelle procédure ou consigne de sûreté a été publiée par la sûreté !"
         )
 
-        # 2. Modale / Expander prioritaire d'émargement en cours de poste
         with st.expander(
             "📋 PRENDRE CONNAISSANCE ET ÉMARGER LA NOUVELLE CONSIGNE IMMÉDIATEMENT",
             expanded=True,
@@ -53,33 +78,6 @@ if st.session_state.get("vacation_ouverte"):
                 vacation_ref=st.session_state.get("vacation_ref"),
             )
 
-# --- CONFIGURATION DU FUSEAU HORAIRE NOUVELLE-CALÉDONIE (UTC+11) ---
-TZ_NC = zoneinfo.ZoneInfo("Pacific/Noumea")
-
-# Ping automatique toutes les 3 minutes (180 000 ms) pour maintenir la session
-st_autorefresh(interval=60 * 1000, key="keep_alive_main_courante")
-
-
-def get_now_nc() -> datetime.datetime:
-    """Retourne la date et l'heure actuelles en Nouvelle-Calédonie."""
-    return datetime.datetime.now(TZ_NC)
-
-
-# --- FIX DES CHEMINS PYTHON ET IMPORTS SOCLE ---
-ROOT_DIR = Path(__file__).resolve().parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
-
-from utils.db_client import supabase
-
-# --- CONFIGURATION DE LA PAGE STREAMLIT ---
-st.set_page_config(
-    page_title="ORBIS - Main Courante V3",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 # =========================================================================
 # 🎯 ACCÈS DIRECT MONITEUR MOUVEMENTS (SANS AUTHENTIFICATION OBLIGATOIRE)
 # =========================================================================
@@ -90,7 +88,7 @@ if view_param == "mouvements":
     from views import app_mouvements
 
     app_mouvements.show()
-    st.stop()  # Stoppe le script ici pour la console dédiée d'entrées/sorties
+    st.stop()
 
 # =========================================================================
 # 1. STRATÉGIE D'AUTHENTIFICATION HYBRIDE (SSO PORTAIL + YUBIKEY LOCAL)
@@ -112,11 +110,10 @@ if token_url and not auth.est_connecte():
                 st.session_state["utilisateur"] = user_sso
                 st.session_state["connecte"] = True
                 st.session_state["session_token_actuel"] = token_url
-                st.query_params.clear()  # Nettoyage de la barre d'adresse URL
+                st.query_params.clear()
     except Exception as err:
         st.warning(f"⚠️ Validation du jeton SSO Portail échouée : {err}")
 
-# Si non authentifié (accès URL direct) ➔ Mire Hybride SDK (Mot de passe + YubiKey)
 if not auth.est_connecte():
     ui.afficher_ecran_login(
         nom_application="ORBIS - Main Courante V3",
@@ -139,10 +136,10 @@ def charger_sites_actifs() -> list[str]:
             .execute()
         )
         sites = [row["nom_site"] for row in (res.data or []) if row.get("nom_site")]
-        return sites if sites else ["DINUM", "DOUMER", "GNC", "HÔTEL DU GOUVERNEMENT"]
+        return sites if sites else ["DINUM", "SITE DOUMER", "SITE OUEMO"]
     except Exception as err:
         print(f"Erreur chargement table Sites : {err}")
-        return ["DINUM", "DOUMER", "GNC", "HÔTEL DU GOUVERNEMENT"]
+        return ["DINUM", "SITE DOUMER", "SITE OUEMO"]
 
 
 # =========================================================================
@@ -231,10 +228,7 @@ if est_multi_sites:
         "📍 Site de Supervision / Garde :",
         SITES_DISPONIBLES,
         index=idx_defaut,
-        help=(
-            "Profil Administrateur / Sûreté : liste dynamique issue de la"
-            " base 'Sites'."
-        ),
+        help="Profil Administrateur / Sûreté : liste dynamique issue de la base 'Sites'.",
     )
 else:
     site_selected = site_defaut_user
@@ -244,8 +238,9 @@ st.session_state["site_actif"] = site_selected
 st.sidebar.markdown("---")
 
 # =========================================================================
-# 6. CALCUL DYNAMIQUE ET ALERTE BADGES TEMPORAIRES
+# 6. CALCUL DYNAMIQUE ET ALERTES (BADGES & MESSAGES NON LUS)
 # =========================================================================
+# A. Badges temporaires
 try:
     res_count = (
         supabase.table("badges_temporaires")
@@ -258,47 +253,137 @@ try:
 except Exception:
     nb_badges_actifs = 0
 
-if nb_badges_actifs > 0:
-    label_badges = f"🚨 🏷️ BADGES TEMPORAIRES ({nb_badges_actifs})"
-else:
-    label_badges = "🏷️ Badges Temporaires"
+label_badges = (
+    f"🚨 🏷️ BADGES TEMPORAIRES ({nb_badges_actifs})"
+    if nb_badges_actifs > 0
+    else "🏷️ Badges Temporaires"
+)
+
+# B. Messagerie Interne (Messages non lus pour l'agent connecté)
+nom_user_clean = str(user.get("full_name", "")).strip().upper()
+try:
+    dests_valides = [nom_user_clean, "TOUS"]
+    if est_multi_sites or role_actif in [
+        "ADMIN",
+        "SUPER_ADMIN",
+        "CHARGE_SURETE",
+        "COS",
+    ]:
+        dests_valides.append("ADMIN_SURETE")
+
+    res_msg_non_lus = (
+        supabase.table("mc_discussion")
+        .select("id", count="exact")
+        .eq("site_id", site_selected)
+        .eq("lu", False)
+        .neq("expediteur_nom", nom_user_clean)
+        .in_("destinataire_nom", dests_valides)
+        .execute()
+    )
+    nb_msg_non_lus = res_msg_non_lus.count if res_msg_non_lus.count else 0
+except Exception:
+    nb_msg_non_lus = 0
+
+label_messagerie = (
+    f"🚨 💬 MESSAGERIE INTERNE ({nb_msg_non_lus})"
+    if nb_msg_non_lus > 0
+    else "💬 Messagerie Interne"
+)
 
 # =========================================================================
-# 7. CONSTRUCTION DYNAMIQUE DU MENU DE NAVIGATION SELON LE RÔLE
+# 🎯 DÉTECTION INTELLIGENTE : OPTION B (POP-UP UNIQUEMENT SI NOUVEAU MESSAGE)
 # =========================================================================
-menu_options = {
-    "📝 Main Courante": "main_courante",
-    "📂 Référentiel Documentaire": "referentiel_doc",  # 👈 Bibliothèque de référence OPERA (Lecture seule)
+# 1. On récupère le nombre de messages non lus enregistré lors du dernier ping
+ancien_nb_msg = st.session_state.get("anc_nb_msg_non_lus", 0)
+
+# 2. Si le nombre a augmenté (ex: passage de 0 à 1, ou de 1 à 2), on autorise le pop-up
+if nb_msg_non_lus > ancien_nb_msg:
+    st.session_state["popup_msg_ignore"] = False
+
+# 3. On sauvegarde le compte actuel pour le prochain ping de 60 secondes
+st.session_state["anc_nb_msg_non_lus"] = nb_msg_non_lus
+
+
+# =========================================================================
+# 🔔 MODALE POP-UP D'ALERTE POUR NOUVEAU MESSAGE ENTRANT
+# =========================================================================
+@st.dialog("🔔 NOUVEAU MESSAGE DE SERVICE RECEIVED")
+def afficher_modal_nouveau_message(nb_messages: int):
+    st.warning(
+        f"📩 **Vous avez {nb_messages} nouveau(x) message(s) non lu(s)** "
+        "transmis par la Direction / Sûreté ou un autre poste de garde."
+    )
+    st.caption(
+        "Consultez le fil d'échanges pour prendre connaissance des consignes ou questions."
+    )
+
+    col_go, col_close = st.columns([1.5, 1])
+
+    with col_go:
+        if st.button(
+            "💬 Ouvrir la messagerie", type="primary", use_container_width=True
+        ):
+            st.session_state["navigue_vers_module"] = "discussion"
+            st.session_state["popup_msg_ignore"] = True
+            st.rerun()
+
+    with col_close:
+        if st.button("Fermer", use_container_width=True):
+            st.session_state["popup_msg_ignore"] = True
+            st.rerun()
+
+
+# Affichage du pop-up uniquement s'il y a des messages non lus ET que l'autorisation est active
+if nb_msg_non_lus > 0 and not st.session_state.get("popup_msg_ignore", False):
+    afficher_modal_nouveau_message(nb_msg_non_lus)
+
+# =========================================================================
+# 7. CONSTRUCTION DYNAMIQUE DU MENU DE NAVIGATION SÉCURISÉ
+# =========================================================================
+NAVIGATION_MAP = {
+    "main_courante": "📝 Main Courante",
+    "discussion": label_messagerie,
+    "referentiel_doc": "📂 Référentiel Documentaire",
 }
 
 ROLES_REGISTRE = ["CHARGE_SURETE", "ADMIN", "COS", "SUPER_ADMIN"]
 if role_actif in ROLES_REGISTRE:
-    menu_options["📖 Consulter Registre"] = "registre"
+    NAVIGATION_MAP["registre"] = "📖 Consulter Registre"
 
-menu_options.update(
+NAVIGATION_MAP.update(
     {
-        "✍️ Visiteur Imprévu": "visiteur_imprevu",
-        "👥 Visiteurs Attendus": "visiteurs_attendus",
-        "🏢 Présences sur site": "evacuation_incendie",
-        "🔦 Suivi des Rondes": "suivi_rondes",
-        "🚨 Anomalies & Consignes Générales": "anomalies",
-        label_badges: "badges",
-        "🚗 Gestion des Permis": "permis",
+        "visiteur_imprevu": "✍️ Visiteur Imprévu",
+        "visiteurs_attendus": "👥 Visiteurs Attendus",
+        "evacuation_incendie": "🏢 Présences sur site",
+        "suivi_rondes": "🔦 Suivi des Rondes",
+        "anomalies": "🚨 Anomalies & Consignes Générales",
+        "badges": label_badges,
+        "permis": "🚗 Gestion des Permis",
     }
 )
 
 ROLES_ADMIN_ONLY = ["ADMIN", "SUPER_ADMIN", "CHARGE_SURETE", "COS"]
 if role_actif in ROLES_ADMIN_ONLY:
-    menu_options["🎯 Consignes Ciblées (Admin)"] = "consignes_admin"
-    menu_options["🛡️ Hypervision COS"] = "hypervision"
+    NAVIGATION_MAP["consignes_admin"] = "🎯 Consignes Ciblées (Admin)"
+    NAVIGATION_MAP["hypervision"] = "🛡️ Hypervision COS"
 
-menu_options["🔍 Recherche Prestataires"] = "recherche_prestataires"
+NAVIGATION_MAP["recherche_prestataires"] = "🔍 Recherche Prestataires"
 
-selection_label = st.sidebar.radio("Navigation", list(menu_options.keys()))
-module_actif = menu_options[selection_label]
+if "module_actif" not in st.session_state:
+    st.session_state["module_actif"] = "main_courante"
+
+if st.session_state.get("navigue_vers_module"):
+    st.session_state["module_actif"] = st.session_state.pop("navigue_vers_module")
+
+module_actif = st.sidebar.radio(
+    "Navigation",
+    options=list(NAVIGATION_MAP.keys()),
+    format_func=lambda key: NAVIGATION_MAP[key],
+    key="module_actif",
+)
 
 # =========================================================================
-# 7.1. ACCÈS DIRECT AU MONITEUR DES MOUVEMENTS (DEUXIÈME ONGLET / ÉCRAN)
+# 7.1. ACCÈS DIRECT AU MONITEUR DES MOUVEMENTS (ONGLET DÉDIÉ)
 # =========================================================================
 st.sidebar.markdown("---")
 
@@ -309,10 +394,7 @@ st.sidebar.link_button(
         f"?site={site_selected}&role={role_actif}&user={nom_user_encoded}&view=mouvements"
     ),
     use_container_width=True,
-    help=(
-        "Ouvre la console des flux d'entrées/sorties en continu dans un nouvel"
-        " onglet."
-    ),
+    help="Ouvre la console des flux d'entrées/sorties en continu dans un nouvel onglet.",
 )
 
 st.sidebar.markdown("---")
@@ -335,6 +417,11 @@ if module_actif == "main_courante":
     from views import main_courante
 
     main_courante.show()
+
+elif module_actif == "discussion":
+    from views import discussion
+
+    discussion.show()
 
 elif module_actif == "referentiel_doc":
     from views.procedures_view import afficher_page_procedures_opera
@@ -397,4 +484,4 @@ elif module_actif == "recherche_prestataires":
     recherche_prestataires.show()
 
 else:
-    st.info(f"Le module **{selection_label}** est en cours de construction.")
+    st.info(f"Le module sélectionné est en cours de construction.")
