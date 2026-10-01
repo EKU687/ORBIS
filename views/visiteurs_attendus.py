@@ -2,7 +2,8 @@
 # MODULE : SUIVI GÉNÉRAL ET VISITEURS ATTENDUS (views/visiteurs_attendus.py)
 # Inclus : Synchronisation BDD, Importation CSV réservée ADMIN (Persistance Supabase),
 #          Gestion des imprévus, Planning ASAP,
-#          et Modes Livraison / Dépôt-Récup / AGENT-GNC (Sans badge ORBIS).
+#          Modes Livraison / Dépôt-Récup / AGENT-GNC / PRESTATAIRE HABILITÉ,
+#          et Contrôle conditionnel du champ niveau_habilitation (Niveau 2 & 3).
 # =========================================================================
 import datetime
 import io
@@ -42,6 +43,36 @@ def fetch_asap_data(url: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=300)
+def fetch_prestataires_map() -> dict[str, str]:
+    """
+    Récupère la liste des prestataires depuis Supabase et filtre sur niveau_habilitation (Niveau 2 et 3 uniquement).
+    Retourne un dictionnaire {NOM_CLEAN: "Niveau 2" | "Niveau 3"}.
+    """
+    presta_map = {}
+    try:
+        res = (
+            supabase.table("Prestataires")
+            .select("nom, prenom, niveau_habilitation")
+            .execute()
+        )
+        for row in res.data or []:
+            nom = str(row.get("nom") or "").strip().upper()
+            prenom = str(row.get("prenom") or "").strip().upper()
+            niveau_raw = str(row.get("niveau_habilitation") or "").strip()
+
+            # Seuls le Niveau 2 et le Niveau 3 sont pris en compte
+            if nom and ("2" in niveau_raw or "3" in niveau_raw):
+                niveau_val = "Niveau 2" if "2" in niveau_raw else "Niveau 3"
+                if prenom:
+                    presta_map[f"{nom} {prenom}"] = niveau_val
+                    presta_map[f"{prenom} {nom}"] = niveau_val
+                presta_map[nom] = niveau_val
+    except Exception as e:
+        print(f"Note lecture table Prestataires Supabase : {e}")
+    return presta_map
+
+
 def fetch_visiteurs_importes_bdd(
     site_id: str, target_date: datetime.date
 ) -> pd.DataFrame:
@@ -56,7 +87,6 @@ def fetch_visiteurs_importes_bdd(
         )
         if res.data:
             df = pd.DataFrame(res.data)
-            # Normalisation des colonnes pour alignement avec le format ASAP
             df_renamed = df.rename(
                 columns={
                     "date_visite": "date",
@@ -149,7 +179,12 @@ def fetch_badges_temporaires_actifs(site_id: str) -> tuple[dict[str, str], set[s
             bdg = str(row.get("num_badge", "")).strip().upper()
             if nom and bdg:
                 badge_map[nom] = bdg
-            if bdg and bdg not in ["LIVRAISON", "DEPOT_MATERIEL", "AGENT_GNC"]:
+            if bdg and bdg not in [
+                "LIVRAISON",
+                "DEPOT_MATERIEL",
+                "AGENT_GNC",
+                "PRESTATAIRE_HABILITE",
+            ]:
                 badges_occupes.add(bdg)
     except Exception as e:
         print(f"Note lecture badges_temporaires : {e}")
@@ -210,6 +245,8 @@ def get_visiteurs_presents_bdd(
                     badge = "LIVRAISON"
                 elif "GNC" in desc.upper() or "REF-VIS-GNC-IN" in ref:
                     badge = "AGENT_GNC"
+                elif "PRESTA" in desc.upper() or "REF-VIS-PRESTA-IN" in ref:
+                    badge = "PRESTATAIRE_HABILITE"
 
                 if badge in ["Aucun", "", "V"] and nom_key in map_badges_bdd:
                     badge = map_badges_bdd[nom_key]
@@ -223,6 +260,7 @@ def get_visiteurs_presents_bdd(
                     "LIVRAISON",
                     "DEPOT_MATERIEL",
                     "AGENT_GNC",
+                    "PRESTATAIRE_HABILITE",
                 ]:
                     badges_occupes.add(badge)
 
@@ -307,7 +345,7 @@ def show():
         )
 
     with c_head2:
-        st.write("")  # Espaceur d'alignement
+        st.write("")
         st.write("")
         if selected_date == aujourdhui_nc:
             st.caption("🟢 Temps réel (Aujourd'hui)")
@@ -317,7 +355,7 @@ def show():
             st.caption("🟠 Historique / Archives")
 
     with c_head3:
-        st.write("")  # Espaceur d'alignement
+        st.write("")
         st.write("")
         if st.button("🔄 Actualiser", use_container_width=True):
             st.cache_data.clear()
@@ -372,7 +410,6 @@ def show():
                         for _, r in df_custom.iterrows():
                             raw_date = str(r.get("date", "")).strip()
 
-                            # Conversion de la date au format YYYY-MM-DD pour PostgreSQL
                             date_iso = None
                             try:
                                 if "/" in raw_date:
@@ -420,7 +457,6 @@ def show():
                 except Exception as err_file:
                     st.error(f"❌ Erreur lors de l'importation en BDD : {err_file}")
 
-            # Bouton de purge ADMIN pour la date sélectionnée
             df_existing_imports = fetch_visiteurs_importes_bdd(
                 site_actuel, selected_date
             )
@@ -436,7 +472,7 @@ def show():
                         supabase.table("orbis_visiteurs_importes").delete().eq(
                             "site_id", site_actuel
                         ).eq("date_visite", selected_str_iso).execute()
-                        st.toast("Imports CSV de la journée purgés.", icon="🗑️️")
+                        st.toast("Imports CSV de la journée purgés.", icon="🗑")
                         st.rerun()
                     except Exception as err_del:
                         st.error(f"Erreur purge : {err_del}")
@@ -446,16 +482,18 @@ def show():
         site_actuel, selected_date
     )
 
+    # --- CHARGEMENT DU DICTIONNAIRE PRESTATAIRES (NIVEAU 2 ET 3 SEULEMENT) ---
+    map_prestataires_niveaux = fetch_prestataires_map()
+
     tous_badges = [f"V.{i:03d}" for i in range(1, 31)]
 
-    # --- ÉVOLUTION : AJOUT DE L'OPTION AGENT GNC ---
     OPTIONS_SANS_BADGE = [
         "📦 LIVRAISON (Quai / Sans badge)",
         "📦 DÉPÔT/RÉCUP MATÉRIEL (Sans badge)",
         "🪪 AGENT GNC (Accès avec badge propre / Sans badge ORBIS)",
+        "🛠️ PRESTATAIRE HABILITÉ (Badge permanent / Sans badge ORBIS)",
     ]
 
-    # Filtrage strict et unique des badges disponibles
     badges_disponibles = (
         ["Sélectionner un badge..."]
         + OPTIONS_SANS_BADGE
@@ -490,6 +528,8 @@ def show():
                         st.warning("📦 **Dépôt / Récupération Matériel**")
                     elif badge_imp == "AGENT_GNC":
                         st.info("🪪 **Agent GNC (Badge propre)**")
+                    elif badge_imp == "PRESTATAIRE_HABILITE":
+                        st.info("🛠️ **Prestataire Habilité (Badge permanent)**")
                     else:
                         st.info(f"Badge affecté : **{badge_imp}**")
 
@@ -544,13 +584,8 @@ def show():
     # --- 2. VISITEURS ATTENDUS (ASAP + BDD VISITEURS IMPORTÉS) ---
     st.markdown(f"### 👥 Visiteurs Attendus (Planning du {selected_str_fr})")
 
-    # 1. Chargement ASAP (Google Sheet)
     df_asap = fetch_asap_data(URL_ASAP_CSV)
-
-    # 2. Chargement des Visiteurs Importés (Supabase)
     df_bdd_imports = fetch_visiteurs_importes_bdd(site_actuel, selected_date)
-
-    # 3. Concaténation multi-sources
     df_raw = pd.concat([df_asap, df_bdd_imports], ignore_index=True)
 
     if not df_raw.empty:
@@ -570,7 +605,6 @@ def show():
         else:
             df_target_date = df_filtered.copy()
 
-        # Filtrer ceux déjà sortis ET ceux déclarés non présentés / annulés
         if not df_target_date.empty:
             df_target_date["nom_clean"] = (
                 df_target_date["nom"].astype(str).str.strip().str.upper()
@@ -595,6 +629,9 @@ def show():
 
                     est_present = nom_visiteur in presents_bdd
 
+                    # 🎯 CONTRÔLE CONDITIONNEL DE NIVEAU DE HABILITATION (Niveau 2 ou 3)
+                    niveau_habilitation = map_prestataires_niveaux.get(nom_visiteur)
+
                     col_time, col_info, col_action = st.columns([1, 2.2, 1.8])
 
                     with col_time:
@@ -607,6 +644,14 @@ def show():
                     with col_info:
                         st.markdown(f"👤 **{nom_visiteur}** (`{email_visiteur}`)")
                         st.write(f"🏢 **Hôte :** {organisateur}")
+
+                        # 🏷️ BADGES D'INFORMATION D'HABILITATION HARMONISÉS
+                        if niveau_habilitation == "Niveau 2":
+                            st.info("🪪 **PRESTATAIRE ENREGISTRÉ — Badge de Niveau 2**")
+                        elif niveau_habilitation == "Niveau 3":
+                            st.warning(
+                                "🛠️ **PRESTATAIRE HABILITÉ NIV.3 (Accès Datacenter / Zone Critique)**"
+                            )
 
                     with col_action:
                         now_nc = datetime.datetime.now(TZ_NC)
@@ -621,6 +666,8 @@ def show():
                                 st.warning("📦 **Dépôt / Récupération Matériel**")
                             elif badge_attribue == "AGENT_GNC":
                                 st.info("🪪 **Agent GNC (Badge propre)**")
+                            elif badge_attribue == "PRESTATAIRE_HABILITE":
+                                st.info("🛠️ **Prestataire Habilité (Badge permanent)**")
                             else:
                                 st.info(f"Badge affecté : **{badge_attribue}**")
 
@@ -652,7 +699,11 @@ def show():
                                     else (
                                         f"Sortie Agent GNC : {nom_visiteur} (RDV avec {organisateur})."
                                         if badge_attribue == "AGENT_GNC"
-                                        else f"Sortie visiteur attendu : {nom_visiteur} (Badge {badge_attribue} restitué). Visite de {organisateur}."
+                                        else (
+                                            f"Sortie Prestataire Habilité : {nom_visiteur} (RDV avec {organisateur})."
+                                            if badge_attribue == "PRESTATAIRE_HABILITE"
+                                            else f"Sortie visiteur attendu : {nom_visiteur} (Badge {badge_attribue} restitué). Visite de {organisateur}."
+                                        )
                                     )
                                 )
                                 payload_mc_sortie = {
@@ -680,9 +731,15 @@ def show():
                                     st.error(f"Erreur enregistrement MC : {e}")
 
                         else:
+                            # 🎯 SÉLECTION AUTOMATIQUE DE PRESTATAIRE HABILITÉ SI NIV 2 OU 3
+                            index_defaut = 0
+                            if niveau_habilitation in ["Niveau 2", "Niveau 3"]:
+                                index_defaut = 4  # Positionne directement sur "🛠️ PRESTATAIRE HABILITÉ..."
+
                             badge_sel = st.selectbox(
                                 "Badge Visiteur :",
                                 badges_disponibles,
+                                index=index_defaut,
                                 key=f"sel_bdg_{idx}",
                             )
 
@@ -707,6 +764,9 @@ def show():
                                     elif "AGENT GNC" in badge_sel:
                                         valeur_badge = "AGENT_GNC"
                                         ref_entree = "REF-VIS-GNC-IN"
+                                    elif "PRESTATAIRE HABILITÉ" in badge_sel:
+                                        valeur_badge = "PRESTATAIRE_HABILITE"
+                                        ref_entree = "REF-VIS-PRESTA-IN"
                                     else:
                                         valeur_badge = badge_sel
                                         ref_entree = "REF-VIS-IN"
@@ -740,6 +800,9 @@ def show():
                                         action_entree = (
                                             "Présence enregistrée (Badge GNC autonome)."
                                         )
+                                    elif valeur_badge == "PRESTATAIRE_HABILITE":
+                                        desc_entree = f"Arrivée Prestataire Habilité ({niveau_habilitation or 'N/A'}) : {nom_visiteur} pour RDV avec {organisateur}."
+                                        action_entree = "Présence enregistrée (Badge permanent Prestataire AEOS)."
                                     else:
                                         desc_entree = f"Arrivée visiteur attendu : {nom_visiteur} (Badge {badge_sel}) pour {organisateur} ({email_visiteur})."
                                         action_entree = (
