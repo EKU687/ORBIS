@@ -1,10 +1,12 @@
 # =========================================================================
 # MODULE : REGISTRE D'ÉVACUATION & RASSEMBLEMENT (views/evacuation_incendie.py)
 # Inclus : Consolidation AEOS + Visiteurs ORBIS V3, Tri hiérarchisé,
-#          Pointage séparé (Employés / Prestataires / Visiteurs).
+#          Pointage séparé (Employés / Prestataires / Visiteurs),
+#          et Règle Anti-Doublon stricte pour Prestataires Habilités & Agents GNC.
 # =========================================================================
 import datetime
 from pathlib import Path
+import re
 import sys
 import zoneinfo
 import pandas as pd
@@ -34,12 +36,12 @@ def fetch_aeos_presents(site_id: str) -> list[dict]:
             .execute()
         )
         data = res.data or []
-        
+
         # Repli de sécurité : si aucun résultat sur le site strict, on récupère tout
         if not data:
             res_all = supabase.table("aeos_presence").select("*").execute()
             data = res_all.data or []
-            
+
         return data
     except Exception as e:
         st.error(f"⚠️ Erreur chargement AEOS : {e}")
@@ -51,8 +53,12 @@ def fetch_orbis_visiteurs_presents(site_id: str) -> list[dict]:
     clean_visiteurs = []
     site_target = str(site_id).upper().strip() if site_id else "DINUM"
     now_nc = get_now_nc()
-    dt_start = datetime.datetime.combine(now_nc.date(), datetime.time.min, tzinfo=TZ_NC).isoformat()
-    dt_end = datetime.datetime.combine(now_nc.date(), datetime.time.max, tzinfo=TZ_NC).isoformat()
+    dt_start = datetime.datetime.combine(
+        now_nc.date(), datetime.time.min, tzinfo=TZ_NC
+    ).isoformat()
+    dt_end = datetime.datetime.combine(
+        now_nc.date(), datetime.time.max, tzinfo=TZ_NC
+    ).isoformat()
 
     try:
         # 1. Source A : badges_temporaires
@@ -63,16 +69,24 @@ def fetch_orbis_visiteurs_presents(site_id: str) -> list[dict]:
             .eq("statut", "EN_COURS")
             .execute()
         )
-        for vis in (res_bdg.data or []):
-            nom_test = vis.get("nom_porteur") or vis.get("nom_agent") or vis.get("nom_complet") or vis.get("nom") or ""
+        for vis in res_bdg.data or []:
+            nom_test = (
+                vis.get("nom_porteur")
+                or vis.get("nom_agent")
+                or vis.get("nom_complet")
+                or vis.get("nom")
+                or ""
+            )
             if str(nom_test).strip() and str(nom_test).strip().upper() != "INCONNU":
-                clean_visiteurs.append({
-                    "nom_porteur": str(nom_test).strip().upper(),
-                    "num_badge": vis.get("num_badge", "Sans Badge"),
-                    "type_badge": vis.get("type_porteur", "VISITEUR"),
-                    "organisme": vis.get("organisme", "Extérieur"),
-                    "hote_referent": vis.get("hote_referent", "Non précisé")
-                })
+                clean_visiteurs.append(
+                    {
+                        "nom_porteur": str(nom_test).strip().upper(),
+                        "num_badge": vis.get("num_badge", "Sans Badge"),
+                        "type_badge": vis.get("type_porteur", "VISITEUR"),
+                        "organisme": vis.get("organisme", "Extérieur"),
+                        "hote_referent": vis.get("hote_referent", "Non précisé"),
+                    }
+                )
 
         # 2. Source B : Recherche des entrées sans sortie du jour dans mc_evenements (ASAP, CSV, Imprévus)
         res_mc = (
@@ -87,35 +101,51 @@ def fetch_orbis_visiteurs_presents(site_id: str) -> list[dict]:
         )
 
         presents_mc = {}
-        for ev in (res_mc.data or []):
-            ref = ev.get("reference", "")
-            desc = ev.get("description", "")
-            
-            # Nom du visiteur extrait de la description
-            nom_key = desc.split(":")[1].split("(")[0].strip().upper() if ":" in desc else desc.strip().upper()
+        for ev in res_mc.data or []:
+            ref = str(ev.get("reference", ""))
+            desc = str(ev.get("description", ""))
 
-            if "-IN-" in ref:
+            # Extraction propre du nom du visiteur depuis la description
+            if ":" in desc:
+                apres_col = desc.split(":", 1)[1]
+                nom_key = (
+                    re.split(r"\s+(?:pour|\(|avec|\.)", apres_col, flags=re.IGNORECASE)[
+                        0
+                    ]
+                    .strip()
+                    .upper()
+                )
+            else:
+                nom_key = desc.strip().upper()
+
+            if "-IN" in ref:
                 bdg_val = "Sans Badge"
                 if "LIVRAISON" in desc.upper():
                     bdg_val = "LIVRAISON"
                 elif "DEPOT" in desc.upper() or "MATERIEL" in desc.upper():
                     bdg_val = "DEPOT_MATERIEL"
+                elif "GNC" in desc.upper():
+                    bdg_val = "AGENT_GNC"
+                elif "PRESTA" in desc.upper():
+                    bdg_val = "PRESTATAIRE_HABILITE"
                 elif "BADGE" in desc.upper():
-                    parts = desc.split("Badge")
-                    if len(parts) > 1:
-                        bdg_val = parts[1].split(")")[0].strip()
+                    match = re.search(
+                        r"Badge\s+([VTL]\.?[0-9A-Z_]+)", desc, re.IGNORECASE
+                    )
+                    if match:
+                        bdg_val = match.group(1).upper()
 
                 presents_mc[nom_key] = {
                     "nom_porteur": nom_key,
                     "num_badge": bdg_val,
                     "type_badge": "VISITEUR",
                     "organisme": "Extérieur",
-                    "hote_referent": "Accueilli sur site"
+                    "hote_referent": "Accueilli sur site",
                 }
-            elif "-OUT-" in ref or "-ABS-" in ref:
+            elif "-OUT" in ref or "-ABS" in ref:
                 presents_mc.pop(nom_key, None)
 
-        # 3. Déduplication par nom entre les deux sources
+        # 3. Déduplication par nom entre les deux sources ORBIS
         noms_existants = {v["nom_porteur"] for v in clean_visiteurs}
         for nom_mc, info_mc in presents_mc.items():
             if nom_mc not in noms_existants:
@@ -127,6 +157,7 @@ def fetch_orbis_visiteurs_presents(site_id: str) -> list[dict]:
         st.error(f"⚠️ Erreur chargement Visiteurs ORBIS : {e}")
         return clean_visiteurs
 
+
 def afficher_tableau_pointage(df_data: pd.DataFrame, key_suffix: str):
     """Affiche un tableau interactif Streamlit avec case de pointage et progression."""
     if df_data.empty:
@@ -137,7 +168,6 @@ def afficher_tableau_pointage(df_data: pd.DataFrame, key_suffix: str):
     if "Présent au Rassemblement" not in df_display.columns:
         df_display.insert(0, "Présent au Rassemblement", False)
 
-    # Ordre des colonnes masquant la colonne technique 'Ordre_Tri'
     cols_to_show = [
         "Présent au Rassemblement",
         "Source",
@@ -159,11 +189,20 @@ def afficher_tableau_pointage(df_data: pd.DataFrame, key_suffix: str):
             ),
             "Source": st.column_config.TextColumn("Origine", width="small"),
             "Nom & Prénom": st.column_config.TextColumn("Nom & Prénom", width="medium"),
-            "Service / Société": st.column_config.TextColumn("Service / Société", width="medium"),
+            "Service / Société": st.column_config.TextColumn(
+                "Service / Société", width="medium"
+            ),
             "Catégorie": st.column_config.TextColumn("Type", width="small"),
             "Badge / Mode": st.column_config.TextColumn("Badge", width="small"),
         },
-        disabled=["Source", "Nom & Prénom", "Service / Société", "Catégorie", "Badge / Mode", "Zone"],
+        disabled=[
+            "Source",
+            "Nom & Prénom",
+            "Service / Société",
+            "Catégorie",
+            "Badge / Mode",
+            "Zone",
+        ],
         hide_index=True,
         use_container_width=True,
         key=f"editor_{key_suffix}",
@@ -173,12 +212,16 @@ def afficher_tableau_pointage(df_data: pd.DataFrame, key_suffix: str):
     total_cat = len(edited_df)
     ratio = nb_pointes / total_cat if total_cat > 0 else 0
     st.progress(ratio)
-    st.caption(f"Status Pointage : **{nb_pointes} / {total_cat}** personnes localisées.")
+    st.caption(
+        f"Status Pointage : **{nb_pointes} / {total_cat}** personnes localisées."
+    )
 
 
 def show():
     st.title("🚨 Registre de Présence & Évacuation Incendie")
-    st.caption("Console de crise et d'appel au point de rassemblement (Consolidation AEOS + ORBIS V3).")
+    st.caption(
+        "Console de crise et d'appel au point de rassemblement (Consolidation AEOS + ORBIS V3)."
+    )
 
     site_actuel = st.session_state.get("site_actif", "DINUM")
 
@@ -192,61 +235,84 @@ def show():
     data_aeos = fetch_aeos_presents(site_actuel)
     data_visiteurs = fetch_orbis_visiteurs_presents(site_actuel)
 
-    # 2. Consolidation dans un DataFrame unifié
     liste_globale = []
+    noms_presents_aeos = set()
 
-    # Formatage des permanents AEOS
+    # 2. Formatage et comptage des permanents AEOS (Source prioritaire pour les cartes permanentes)
     for item in data_aeos:
-        nom_aff = f"{item.get('nom', '')} {item.get('prenom', '')}".strip()
+        nom_aff = f"{item.get('nom', '')} {item.get('prenom', '')}".strip().upper()
         if not nom_aff:
-            nom_aff = item.get("nom_complet", "Inconnu")
+            nom_aff = str(item.get("nom_complet", "INCONNU")).strip().upper()
+
+        if nom_aff:
+            noms_presents_aeos.add(nom_aff)
 
         raw_type = str(item.get("type_personne", "Employé")).strip()
         is_presta = "PRESTA" in raw_type.upper()
-        
-        # Tri : 1=Employé, 2=Prestataire AEOS
+
         ordre_tri = 2 if is_presta else 1
         cat_lib = "Prestataire" if is_presta else "Employé"
 
-        liste_globale.append({
-            "Source": "🏢 AEOS",
-            "Nom & Prénom": nom_aff,
-            "Service / Société": item.get("service", "DINUM"),
-            "Catégorie": cat_lib,
-            "Badge / Mode": "Carte Permanente",
-            "Zone": item.get("zone_acces", "Zone sur site"),
-            "Ordre_Tri": ordre_tri,
-        })
+        liste_globale.append(
+            {
+                "Source": "🏢 AEOS",
+                "Nom & Prénom": nom_aff,
+                "Service / Société": item.get("service", "DINUM"),
+                "Catégorie": cat_lib,
+                "Badge / Mode": "Carte Permanente",
+                "Zone": item.get("zone_acces", "Zone sur site"),
+                "Ordre_Tri": ordre_tri,
+            }
+        )
 
-    # Formatage des visiteurs ORBIS (Exclusion des badges T pour éviter le double comptage avec AEOS)
+    # 3. Formatage des visiteurs ORBIS avec règles d'exclusion anti-doublon strictes
     for vis in data_visiteurs:
         bdg = str(vis.get("num_badge", "Sans Badge")).strip().upper()
         type_badge = str(vis.get("type_badge", "")).strip().upper()
-
-        # 🚫 RÈGLE DE SÛRETÉ : Si c'est un Badge Agent (T), AEOS le compte déjà à l'entrée !
-        is_badge_agent = bdg.startswith("T") or "AGENT" in type_badge or "TEMPORAIRE" in type_badge
-        if is_badge_agent:
-            continue
-
-        cat = "📦 LIVRAISON" if bdg == "LIVRAISON" else ("📦 DÉPÔT MATÉRIEL" if bdg == "DEPOT_MATERIEL" else "✍️ VISITEUR")
-
         nom_aff = (
-            vis.get("nom_porteur")
-            or vis.get("nom_agent")
-            or vis.get("nom_complet")
-            or vis.get("nom")
-            or "Visiteur"
-        ).strip().upper()
+            (
+                vis.get("nom_porteur")
+                or vis.get("nom_agent")
+                or vis.get("nom_complet")
+                or vis.get("nom")
+                or "Visiteur"
+            )
+            .strip()
+            .upper()
+        )
 
-        liste_globale.append({
-            "Source": "✍️ ORBIS V3",
-            "Nom & Prénom": nom_aff,
-            "Service / Société": vis.get("organisme", "Extérieur"),
-            "Catégorie": cat,
-            "Badge / Mode": bdg,
-            "Zone": f"Hôte: {vis.get('hote_referent', 'Non précisé')}",
-            "Ordre_Tri": 3, # 3=Visiteurs / Livreurs
-        })
+        # 🚫 RÈGLE DE SÛRETÉ ANTI-DOUBLON :
+        # - Les badges T (agents permanents avec oubli)
+        # - Les modes AGENT_GNC et PRESTATAIRE_HABILITE
+        # - Les personnes déjà recensées par le serveur AEOS
+        is_badge_agent_ou_presta = (
+            bdg.startswith("T")
+            or bdg in ["AGENT_GNC", "PRESTATAIRE_HABILITE"]
+            or "AGENT" in type_badge
+            or "TEMPORAIRE" in type_badge
+        )
+        est_deja_comptabilise_aeos = nom_aff in noms_presents_aeos
+
+        if is_badge_agent_ou_presta or est_deja_comptabilise_aeos:
+            continue  # On ignore pour éviter le double comptage avec AEOS
+
+        cat = (
+            "📦 LIVRAISON"
+            if bdg == "LIVRAISON"
+            else ("📦 DÉPÔT MATÉRIEL" if bdg == "DEPOT_MATERIEL" else "✍️ VISITEUR")
+        )
+
+        liste_globale.append(
+            {
+                "Source": "✍️ ORBIS V3",
+                "Nom & Prénom": nom_aff,
+                "Service / Société": vis.get("organisme", "Extérieur"),
+                "Catégorie": cat,
+                "Badge / Mode": bdg,
+                "Zone": f"Hôte: {vis.get('hote_referent', 'Non précisé')}",
+                "Ordre_Tri": 3,  # 3=Visiteurs / Livreurs
+            }
+        )
 
     if not liste_globale:
         st.info("ℹ️ Aucune personne recensée actuellement sur le site.")
@@ -255,7 +321,9 @@ def show():
     df_presents = pd.DataFrame(liste_globale)
 
     # 🎯 TRI HIERARCHIQUE : PAR TYPE (Employés -> Prestataires -> Visiteurs) PUIS PAR NOM
-    df_presents.sort_values(by=["Ordre_Tri", "Nom & Prénom"], ascending=[True, True], inplace=True)
+    df_presents.sort_values(
+        by=["Ordre_Tri", "Nom & Prénom"], ascending=[True, True], inplace=True
+    )
 
     # Décompte par sous-groupes
     df_employes = df_presents[df_presents["Ordre_Tri"] == 1]
@@ -267,7 +335,7 @@ def show():
     cnt_vis = len(df_visiteurs)
     total_general = len(df_presents)
 
-    # 3. Métriques synthétiques
+    # 4. Métriques synthétiques
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("🚨 Total sur Site", f"{total_general} pers.")
     m2.metric("👔 Employés (Public)", f"{cnt_emp} pers.")
@@ -276,8 +344,10 @@ def show():
 
     st.markdown("---")
 
-    # 4. Filtre de recherche universel
-    recherche_nom = st.text_input("🔍 Rechercher une personne ou un service :", placeholder="Ex: KUTER ou SIN")
+    # 5. Filtre de recherche universel
+    recherche_nom = st.text_input(
+        "🔍 Rechercher une personne ou un service :", placeholder="Ex: KUTER ou SIN"
+    )
 
     if recherche_nom.strip():
         term = recherche_nom.strip().upper()
@@ -290,13 +360,15 @@ def show():
         df_prestataires = df_presents[df_presents["Ordre_Tri"] == 2]
         df_visiteurs = df_presents[df_presents["Ordre_Tri"] == 3]
 
-    # 5. RUPTURE PAR ONGLETS DÉDIÉS + VUE CONSOLIDÉE
-    tab_globale, tab_emp, tab_presta, tab_vis = st.tabs([
-        f"📊 Liste Consolidée ({len(df_presents)})",
-        f"👔 Employés ({len(df_employes)})",
-        f"🛠️ Prestataires ({len(df_prestataires)})",
-        f"✍️ Visiteurs / Livreurs ({len(df_visiteurs)})",
-    ])
+    # 6. RUPTURE PAR ONGLETS DÉDIÉS + VUE CONSOLIDÉE
+    tab_globale, tab_emp, tab_presta, tab_vis = st.tabs(
+        [
+            f"📊 Liste Consolidée ({len(df_presents)})",
+            f"👔 Employés ({len(df_employes)})",
+            f"🛠️ Prestataires ({len(df_prestataires)})",
+            f"✍️ Visiteurs / Livreurs ({len(df_visiteurs)})",
+        ]
+    )
 
     with tab_globale:
         st.markdown("### 📋 Liste Générale Triée (Employés ➔ Prestataires ➔ Visiteurs)")
