@@ -2,7 +2,7 @@
 # MODULE : SUIVI GÉNÉRAL ET VISITEURS ATTENDUS (views/visiteurs_attendus.py)
 # Inclus : Synchronisation BDD, Importation CSV réservée ADMIN (Persistance Supabase),
 #          Gestion des imprévus, Planning ASAP,
-#          et Modes Livraison Quai / Dépôt-Récup Matériel.
+#          et Modes Livraison / Dépôt-Récup / AGENT-GNC (Sans badge ORBIS).
 # =========================================================================
 import datetime
 import io
@@ -128,9 +128,14 @@ def get_or_create_vacation_id(site_id: str, agent_nom: str) -> str:
         return new_id
 
 
-def fetch_badges_temporaires_actifs(site_id: str) -> dict[str, str]:
-    """Récupère une table de correspondance Nom du porteur -> Numéro de badge depuis badges_temporaires."""
+def fetch_badges_temporaires_actifs(site_id: str) -> tuple[dict[str, str], set[str]]:
+    """
+    Récupère :
+    1. Une table de correspondance Nom du porteur -> Numéro de badge.
+    2. Le Set récapitulatif de tous les numéros de badges physiques actuellement occupés.
+    """
     badge_map = {}
+    badges_occupes = set()
     try:
         res = (
             supabase.table("badges_temporaires")
@@ -141,12 +146,14 @@ def fetch_badges_temporaires_actifs(site_id: str) -> dict[str, str]:
         )
         for row in res.data or []:
             nom = str(row.get("nom_porteur", "")).strip().upper()
-            bdg = row.get("num_badge")
+            bdg = str(row.get("num_badge", "")).strip().upper()
             if nom and bdg:
                 badge_map[nom] = bdg
+            if bdg and bdg not in ["LIVRAISON", "DEPOT_MATERIEL", "AGENT_GNC"]:
+                badges_occupes.add(bdg)
     except Exception as e:
         print(f"Note lecture badges_temporaires : {e}")
-    return badge_map
+    return badge_map, badges_occupes
 
 
 def get_visiteurs_presents_bdd(
@@ -163,9 +170,8 @@ def get_visiteurs_presents_bdd(
     presents_dict = {}
     sortis_set = set()
     absents_set = set()
-    badges_occupes = set()
 
-    map_badges_bdd = fetch_badges_temporaires_actifs(site_id)
+    map_badges_bdd, badges_occupes = fetch_badges_temporaires_actifs(site_id)
 
     try:
         res = (
@@ -202,6 +208,8 @@ def get_visiteurs_presents_bdd(
                     badge = "DEPOT_MATERIEL"
                 elif "LIVRAISON" in desc.upper() or "REF-VIS-LIV-IN" in ref:
                     badge = "LIVRAISON"
+                elif "GNC" in desc.upper() or "REF-VIS-GNC-IN" in ref:
+                    badge = "AGENT_GNC"
 
                 if badge in ["Aucun", "", "V"] and nom_key in map_badges_bdd:
                     badge = map_badges_bdd[nom_key]
@@ -211,7 +219,11 @@ def get_visiteurs_presents_bdd(
                     "description": desc,
                     "ref_in": ref,
                 }
-                if badge.startswith("V.") or badge.startswith("T."):
+                if (badge.startswith("V.") or badge.startswith("T.")) and badge not in [
+                    "LIVRAISON",
+                    "DEPOT_MATERIEL",
+                    "AGENT_GNC",
+                ]:
                     badges_occupes.add(badge)
 
             # Détection sortie
@@ -424,7 +436,7 @@ def show():
                         supabase.table("orbis_visiteurs_importes").delete().eq(
                             "site_id", site_actuel
                         ).eq("date_visite", selected_str_iso).execute()
-                        st.toast("Imports CSV de la journée purgés.", icon="🗑️")
+                        st.toast("Imports CSV de la journée purgés.", icon="🗑️️")
                         st.rerun()
                     except Exception as err_del:
                         st.error(f"Erreur purge : {err_del}")
@@ -436,11 +448,14 @@ def show():
 
     tous_badges = [f"V.{i:03d}" for i in range(1, 31)]
 
+    # --- ÉVOLUTION : AJOUT DE L'OPTION AGENT GNC ---
     OPTIONS_SANS_BADGE = [
         "📦 LIVRAISON (Quai / Sans badge)",
         "📦 DÉPÔT/RÉCUP MATÉRIEL (Sans badge)",
+        "🪪 AGENT GNC (Accès avec badge propre / Sans badge ORBIS)",
     ]
 
+    # Filtrage strict et unique des badges disponibles
     badges_disponibles = (
         ["Sélectionner un badge..."]
         + OPTIONS_SANS_BADGE
@@ -473,6 +488,8 @@ def show():
                         st.warning("📦 **Livraison en cours (Quai)**")
                     elif badge_imp == "DEPOT_MATERIEL":
                         st.warning("📦 **Dépôt / Récupération Matériel**")
+                    elif badge_imp == "AGENT_GNC":
+                        st.info("🪪 **Agent GNC (Badge propre)**")
                     else:
                         st.info(f"Badge affecté : **{badge_imp}**")
 
@@ -602,6 +619,8 @@ def show():
                                 st.warning("📦 **Livraison en cours (Quai)**")
                             elif badge_attribue == "DEPOT_MATERIEL":
                                 st.warning("📦 **Dépôt / Récupération Matériel**")
+                            elif badge_attribue == "AGENT_GNC":
+                                st.info("🪪 **Agent GNC (Badge propre)**")
                             else:
                                 st.info(f"Badge affecté : **{badge_attribue}**")
 
@@ -630,7 +649,11 @@ def show():
                                 desc_sortie = (
                                     f"Départ Livraison / Camion : {nom_visiteur} (Quai déchargement libéré)."
                                     if badge_attribue in ["LIVRAISON", "DEPOT_MATERIEL"]
-                                    else f"Sortie visiteur attendu : {nom_visiteur} (Badge {badge_attribue} restitué). Visite de {organisateur}."
+                                    else (
+                                        f"Sortie Agent GNC : {nom_visiteur} (RDV avec {organisateur})."
+                                        if badge_attribue == "AGENT_GNC"
+                                        else f"Sortie visiteur attendu : {nom_visiteur} (Badge {badge_attribue} restitué). Visite de {organisateur}."
+                                    )
                                 )
                                 payload_mc_sortie = {
                                     "reference": f"REF-VIS-OUT-{ref_time}",
@@ -681,6 +704,9 @@ def show():
                                     elif "DÉPÔT" in badge_sel:
                                         valeur_badge = "DEPOT_MATERIEL"
                                         ref_entree = "REF-VIS-DEP-IN"
+                                    elif "AGENT GNC" in badge_sel:
+                                        valeur_badge = "AGENT_GNC"
+                                        ref_entree = "REF-VIS-GNC-IN"
                                     else:
                                         valeur_badge = badge_sel
                                         ref_entree = "REF-VIS-IN"
@@ -704,12 +730,21 @@ def show():
                                             f"Note enregistrement badge ASAP : {err_b}"
                                         )
 
-                                    desc_entree = (
-                                        f"Arrivée Livraison / Dépôt : {nom_visiteur} pour {organisateur} (Mode : {valeur_badge})."
-                                        if valeur_badge
-                                        in ["LIVRAISON", "DEPOT_MATERIEL"]
-                                        else f"Arrivée visiteur attendu : {nom_visiteur} (Badge {badge_sel}) pour {organisateur} ({email_visiteur})."
-                                    )
+                                    if valeur_badge in ["LIVRAISON", "DEPOT_MATERIEL"]:
+                                        desc_entree = f"Arrivée Livraison / Dépôt : {nom_visiteur} pour {organisateur} (Mode : {valeur_badge})."
+                                        action_entree = (
+                                            "Accès quai/accueil enregistré sans badge."
+                                        )
+                                    elif valeur_badge == "AGENT_GNC":
+                                        desc_entree = f"Arrivée Agent GNC : {nom_visiteur} pour RDV avec {organisateur} (Passage badge propre)."
+                                        action_entree = (
+                                            "Présence enregistrée (Badge GNC autonome)."
+                                        )
+                                    else:
+                                        desc_entree = f"Arrivée visiteur attendu : {nom_visiteur} (Badge {badge_sel}) pour {organisateur} ({email_visiteur})."
+                                        action_entree = (
+                                            "Accueil effectué et badge remis."
+                                        )
 
                                     payload_mc = {
                                         "reference": f"{ref_entree}-{ref_time}",
@@ -719,15 +754,7 @@ def show():
                                         "horodatage": now_nc.isoformat(),
                                         "type_evenement": "VISITEUR",
                                         "description": desc_entree,
-                                        "actions_menees": (
-                                            "Accès quai/accueil enregistré sans badge."
-                                            if valeur_badge
-                                            in [
-                                                "LIVRAISON",
-                                                "DEPOT_MATERIEL",
-                                            ]
-                                            else "Accueil effectué et badge remis."
-                                        ),
+                                        "actions_menees": action_entree,
                                     }
                                     try:
                                         supabase.table("mc_evenements").insert(
