@@ -1,11 +1,12 @@
 # =========================================================================
 # MODULE : ENREGISTREMENT VISITEUR IMPRÉVU (views/visiteur_imprevu.py)
 # Inclus : Demandes spontanées, validation de l'hôte référent,
-#          Modes Livraison Quai / Dépôt-Récup Matériel / Sans Badge physique,
-#          et enregistrement unifié dans la table Supabase badges_temporaires.
+#          Modes Livraison Quai / Dépôt-Récup Matériel / AGENT-GNC / Sans Badge physique,
+#          et filtrage strict des badges Visiteurs (V.001 à V.030) occupés.
 # =========================================================================
 import datetime
 from pathlib import Path
+import re
 import sys
 import uuid
 import zoneinfo
@@ -54,10 +55,7 @@ def fetch_hotes_referents_list() -> list[str]:
     # 2. Chargement des Prestataires
     try:
         res_presta = (
-            supabase.table("Prestataires")
-            .select("nom, prenom")
-            .order("nom")
-            .execute()
+            supabase.table("Prestataires").select("nom, prenom").order("nom").execute()
         )
         if res_presta.data:
             for pr in res_presta.data:
@@ -73,20 +71,53 @@ def fetch_hotes_referents_list() -> list[str]:
     return ["Sélectionner un hôte / agent référent..."] + hotes_tries
 
 
-def fetch_badges_occupes_bdd(site_id: str) -> list[str]:
-    """Récupère les numéros de badges temporaires/visiteurs actuellement en cours d'utilisation sur le site."""
+def fetch_badges_visiteurs_occupes_bdd(site_id: str) -> set[str]:
+    """
+    Récupère la liste des badges Visiteurs V.0XX (ex: V.001, V.002) actuellement
+    occupés sur le site en analysant les événements de la journée dans mc_evenements.
+    """
+    now_nc = get_now_nc()
+    dt_start = datetime.datetime.combine(
+        now_nc.date(), datetime.time.min, tzinfo=TZ_NC
+    ).isoformat()
+    dt_end = datetime.datetime.combine(
+        now_nc.date(), datetime.time.max, tzinfo=TZ_NC
+    ).isoformat()
+
+    badges_occupes = set()
+
     try:
         res = (
-            supabase.table("badges_temporaires")
-            .select("num_badge")
+            supabase.table("mc_evenements")
+            .select("description, reference")
             .eq("site_id", str(site_id))
-            .eq("statut", "EN_COURS")
+            .eq("type_evenement", "VISITEUR")
+            .gte("horodatage", dt_start)
+            .lte("horodatage", dt_end)
+            .order("horodatage", desc=False)
             .execute()
         )
-        return [r["num_badge"] for r in (res.data or []) if r.get("num_badge")]
+
+        for ev in res.data or []:
+            ref = str(ev.get("reference", ""))
+            desc = str(ev.get("description", ""))
+
+            # Recherche d'un motif de badge Visiteur (V.001 à V.030 ou V.1 à V.30)
+            match = re.search(r"\b(V\.\d{1,3})\b", desc, re.IGNORECASE)
+
+            if match:
+                num = int(match.group(1).upper().replace("V.", ""))
+                badge_code = f"V.{num:03d}"
+
+                if "-IN" in ref:
+                    badges_occupes.add(badge_code)
+                elif "-OUT" in ref or "-ABS" in ref:
+                    badges_occupes.discard(badge_code)
+
     except Exception as e:
-        print(f"Note lecture badges occupés : {e}")
-        return []
+        print(f"Note lecture badges V.0XX occupés : {e}")
+
+    return badges_occupes
 
 
 def get_or_create_vacation_id(site_id: str, agent_nom: str) -> str:
@@ -141,25 +172,30 @@ def show():
 
     vac_id = get_or_create_vacation_id(site_actuel, agent_connecte)
 
-    # 1. FILTRE DES BADGES DISPONIBLES (BDD Supabase + Mémoire Session)
-    badges_occupes_bdd = fetch_badges_occupes_bdd(site_actuel)
-    badges_occupes_session = [
-        info["badge"] for info in st.session_state["visiteurs_presents"].values()
-    ]
-    badges_occupes = list(set(badges_occupes_bdd + badges_occupes_session))
+    # 1. FILTRE DES BADGES VISITEURS V.0XX DISPONIBLES (BDD + Session)
+    badges_v_occupes = fetch_badges_visiteurs_occupes_bdd(site_actuel)
+
+    # Prise en compte de la session Streamlit locale
+    badges_session_occupes = {
+        info["badge"]
+        for info in st.session_state["visiteurs_presents"].values()
+        if str(info.get("badge", "")).startswith("V.")
+    }
+    badges_occupes_totaux = badges_v_occupes.union(badges_session_occupes)
 
     tous_badges_v = [f"V.{i:03d}" for i in range(1, 31)]
 
-    # 🎯 INTÉGRATION DES DEUX MODES DE PASSAGE SANS BADGE PHYSIQUE
+    # 🎯 INTÉGRATION DES TROIS MODES DE PASSAGE SANS BADGE PHYSIQUE ORBIS
     OPTIONS_SANS_BADGE = [
         "📦 LIVRAISON (Quai / Sans badge)",
         "📦 DÉPÔT/RÉCUP MATÉRIEL (Sans badge)",
+        "🪪 AGENT GNC (Accès avec badge propre / Sans badge ORBIS)",
     ]
 
     badges_disponibles = (
         ["Sélectionner un badge..."]
         + OPTIONS_SANS_BADGE
-        + [b for b in tous_badges_v if b not in badges_occupes]
+        + [b for b in tous_badges_v if b not in badges_occupes_totaux]
     )
 
     # Charger la liste dynamique des hôtes référents
@@ -170,12 +206,14 @@ def show():
 
         with col_nom:
             nom_visiteur = st.text_input(
-                "Nom & Prénom du visiteur / livreur *", placeholder="Ex: DUPONT Jean ou DHL"
+                "Nom & Prénom du visiteur / livreur *",
+                placeholder="Ex: DUPONT Jean ou DHL",
             )
 
         with col_org:
             organisme = st.text_input(
-                "Société / Organisme", placeholder="Ex: OPT, Chronopost, Privé, etc."
+                "Société / Organisme",
+                placeholder="Ex: OPT, Chronopost, DSCGR, Privé, etc.",
             )
 
         with col_hote:
@@ -205,9 +243,7 @@ def show():
         )
 
     if btn_valider:
-        hote_valide = (
-            agent_referent_sel != "Sélectionner un hôte / agent référent..."
-        )
+        hote_valide = agent_referent_sel != "Sélectionner un hôte / agent référent..."
 
         if not nom_visiteur.strip() or not hote_valide:
             st.error(
@@ -219,7 +255,7 @@ def show():
             )
         elif accord_hote == "✅ ACCEPTÉ" and badge_sel == "Sélectionner un badge...":
             st.error(
-                "⚠️ Veuillez sélectionner un badge physique ou un mode sans badge (Livraison / Dépôt)."
+                "⚠️ Veuillez sélectionner un badge physique ou une option sans badge (Livraison / Dépôt / Agent GNC)."
             )
         else:
             now_nc = get_now_nc()
@@ -256,18 +292,25 @@ def show():
             # CASE 2 : ACCÈS ACCEPTÉ
             elif accord_hote == "✅ ACCEPTÉ":
                 est_sans_badge = badge_sel in OPTIONS_SANS_BADGE
-                
-                # Détermination précise du libellé du badge
+
+                # Détermination précise du libellé du badge et des métadonnées
                 if "LIVRAISON" in badge_sel:
                     badge_final = "LIVRAISON"
                     ref_prefix = "REF-VIS-IMP-LIV-IN"
                     desc_type = "📦 Livraison Imprévue / Quai"
-                    action_desc = "Accès quai de déchargement autorisé sans badge physique."
+                    action_desc = (
+                        "Accès quai de déchargement autorisé sans badge physique."
+                    )
                 elif "DÉPÔT" in badge_sel:
                     badge_final = "DEPOT_MATERIEL"
                     ref_prefix = "REF-VIS-IMP-DEP-IN"
                     desc_type = "📦 Dépôt / Récupération Matériel"
                     action_desc = "Accès accueil/quai autorisé pour dépôt/récupération matériel sans badge physique."
+                elif "AGENT GNC" in badge_sel:
+                    badge_final = "AGENT_GNC"
+                    ref_prefix = "REF-VIS-IMP-GNC-IN"
+                    desc_type = "🪪 Agent GNC en RDV"
+                    action_desc = "Passage autorisé avec le badge professionnel de l'agent GNC (aucun badge ORBIS remis)."
                 else:
                     badge_final = badge_sel
                     ref_prefix = "REF-VIS-IMP-IN"
@@ -281,35 +324,21 @@ def show():
                     "hote": agent_referent,
                     "type": badge_final if est_sans_badge else "IMPREVU",
                 }
-                st.session_state["visiteurs_imprevus_enregistres"].append({
-                    "key": key_visiteur,
-                    "nom": nom_visiteur.upper(),
-                    "organisme": organisme or "N/A",
-                    "hote": agent_referent,
-                    "badge": badge_final,
-                    "heure_arrivee": now_nc.strftime("%H:%M"),
-                })
-
-                # 🎯 PERSISTANCE CRITIQUE BDD : ENREGISTREMENT DANS badges_temporaires
-                payload_badge = {
-                    "site_id": site_actuel,
-                    "num_badge": badge_final,
-                    "nom_porteur": nom_visiteur.upper(),
-                    "type_porteur": "VISITEUR_IMPREVU",
-                    "organisme": organisme or "N/A",
-                    "hote_referent": agent_referent,
-                    "statut": "EN_COURS",
-                    "heure_attribution": now_iso,
-                }
-                try:
-                    supabase.table("badges_temporaires").upsert(
-                        payload_badge, on_conflict="site_id,num_badge"
-                    ).execute()
-                except Exception as err_b:
-                    print(f"⚠️ Note enregistrement BDD badges_temporaires : {err_b}")
+                st.session_state["visiteurs_imprevus_enregistres"].append(
+                    {
+                        "key": key_visiteur,
+                        "nom": nom_visiteur.upper(),
+                        "organisme": organisme or "N/A",
+                        "hote": agent_referent,
+                        "badge": badge_final,
+                        "heure_arrivee": now_nc.strftime("%H:%M"),
+                    }
+                )
 
                 # Journalisation dans la Main Courante (mc_evenements)
-                if est_sans_badge:
+                if badge_final == "AGENT_GNC":
+                    desc_log = f"{desc_type} : {nom_visiteur.upper()} ({organisme or 'GNC/Service Public'}) pour {agent_referent} (Passage badge propre)."
+                elif est_sans_badge:
                     desc_log = f"{desc_type} : {nom_visiteur.upper()} ({organisme or 'Transporteur/Courrier'}) pour {agent_referent} (Mode : {badge_final})."
                 else:
                     desc_log = f"{desc_type} : {nom_visiteur.upper()} ({organisme or 'N/A'}) - Badge {badge_sel}. Visite autorisée par {agent_referent}."
@@ -330,7 +359,9 @@ def show():
                         f"Visiteur enregistré ! Mode/Badge **{badge_final}** affecté à **{nom_visiteur.upper()}**.",
                         icon="✅",
                     )
-                    st.success(f"🎉 Entrée validée pour **{nom_visiteur.upper()}** (Mode/Badge : `{badge_final}`).")
+                    st.success(
+                        f"🎉 Entrée validée pour **{nom_visiteur.upper()}** (Mode/Badge : `{badge_final}`)."
+                    )
                 except Exception as e:
                     st.error(f"Erreur enregistrement MC : {e}")
 
