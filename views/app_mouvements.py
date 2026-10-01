@@ -30,6 +30,7 @@ def get_now_nc() -> datetime.datetime:
 # ✉️ TENTATIVE D'IMPORT DU MODULE EMAIL
 try:
     from utils.email_sender import envoyer_notification_passage_poste_securite
+
     HAS_EMAIL_SENDER = True
 except Exception:
     HAS_EMAIL_SENDER = False
@@ -100,11 +101,7 @@ def fetch_sites_from_bdd() -> dict[str, dict]:
     """Récupère tous les sites depuis Supabase en s'appuyant principalement sur 'nom_site'."""
     sites_map = {}
     try:
-        res = (
-            supabase.table("Sites")
-            .select("id, code_site, nom_site")
-            .execute()
-        )
+        res = supabase.table("Sites").select("id, code_site, nom_site").execute()
         if res.data:
             for row in res.data:
                 nom = row.get("nom_site", "").strip()
@@ -123,8 +120,16 @@ def fetch_sites_from_bdd() -> dict[str, dict]:
     if not sites_map:
         sites_map = {
             "DINUM": {"uuid": None, "nom_site": "DINUM", "code_site": "DINUM"},
-            "SITE DOUMER": {"uuid": None, "nom_site": "SITE DOUMER", "code_site": "DOUMER"},
-            "SITE OUEMO": {"uuid": None, "nom_site": "SITE OUEMO", "code_site": "OUEMO"},
+            "SITE DOUMER": {
+                "uuid": None,
+                "nom_site": "SITE DOUMER",
+                "code_site": "DOUMER",
+            },
+            "SITE OUEMO": {
+                "uuid": None,
+                "nom_site": "SITE OUEMO",
+                "code_site": "OUEMO",
+            },
         }
     return sites_map
 
@@ -143,7 +148,7 @@ def fetch_pointages_existants(site_uuid: str, date_cible: datetime.date) -> dict
             .eq("date_mouvement", date_cible.isoformat())
             .execute()
         )
-        for row in (res.data or []):
+        for row in res.data or []:
             ref_id = row.get("reference", "").replace("MVT-", "")
             if ref_id:
                 pointages[ref_id] = row
@@ -159,7 +164,7 @@ def enregistrer_pointage_agent_bdd(
     organisme: str,
     type_piece: str,
     num_piece: str,
-    agent_nom: str
+    agent_nom: str,
 ):
     """Enregistre l'étape 1 du contrôle au poste de garde dans mc_mouvements."""
     now_dt = get_now_nc()
@@ -247,39 +252,58 @@ def fetch_mouvements_jour(site_nom: str, site_uuid: str, date_cible: datetime.da
                 ag_dir = str(ag.get("direction") or ag.get("service") or "").upper()
                 ag_statut = ag.get("statut", "")
 
-                match_site = (ag_site_id == str(site_uuid)) or (ag_dir in directions_du_site)
+                match_site = (ag_site_id == str(site_uuid)) or (
+                    ag_dir in directions_du_site
+                )
 
                 if match_site:
-                    nom_complet = f"{ag.get('nom', '').upper()} {ag.get('prenom', '')}".strip()
+                    nom_complet = (
+                        f"{ag.get('nom', '').upper()} {ag.get('prenom', '')}".strip()
+                    )
                     item_id = str(ag.get("id"))
                     ev_bdd = pointages_bdd.get(item_id, {})
                     statut_mvt = ev_bdd.get("statut_passage", "")
 
-                    # 🎯 FILTRAGE : Si validé par la Sûreté, l'arrivée est traitée et masquée
-                    if (ag.get("date_debut_validite") == date_str) and (ag_statut in STATUTS_ARRIVEE):
+                    if (ag.get("date_debut_validite") == date_str) and (
+                        ag_statut in STATUTS_ARRIVEE
+                    ):
                         if statut_mvt != "SURETE_VALIDE":
-                            arrivants.append({
+                            arrivants.append(
+                                {
+                                    "id": item_id,
+                                    "id_ident": ag.get("id_ident"),
+                                    "nom": nom_complet,
+                                    "organisme": ag.get("direction")
+                                    or ag.get("organisme")
+                                    or "Agent Public (GNC)",
+                                    "type": "Agent Public",
+                                    "type_badge": ag.get("type_badge", "N/A"),
+                                    "niveau_hab": ag.get(
+                                        "niveau_habilitation", "Niveau 1"
+                                    ),
+                                    "service_str": ag.get("service")
+                                    or ag.get("direction")
+                                    or "Agent Public",
+                                    "source": "Agents_Publics",
+                                    "pointage_bdd": ev_bdd,
+                                }
+                            )
+
+                    if (ag.get("date_fin_validite") == date_str) and (
+                        ag_statut in STATUTS_DEPART
+                    ):
+                        departs.append(
+                            {
                                 "id": item_id,
                                 "id_ident": ag.get("id_ident"),
                                 "nom": nom_complet,
-                                "organisme": ag.get("direction") or ag.get("organisme") or "Agent Public (GNC)",
-                                "type": "Agent Public",
-                                "type_badge": ag.get("type_badge", "N/A"),
-                                "niveau_hab": ag.get("niveau_habilitation", "Niveau 1"),
-                                "service_str": ag.get("service") or ag.get("direction") or "Agent Public",
+                                "organisme": ag.get("direction")
+                                or ag.get("organisme")
+                                or "Agent Public (GNC)",
+                                "badge": ag.get("type_badge", "Standard"),
                                 "source": "Agents_Publics",
-                                "pointage_bdd": ev_bdd,
-                            })
-
-                    if (ag.get("date_fin_validite") == date_str) and (ag_statut in STATUTS_DEPART):
-                        departs.append({
-                            "id": item_id,
-                            "id_ident": ag.get("id_ident"),
-                            "nom": nom_complet,
-                            "organisme": ag.get("direction") or ag.get("organisme") or "Agent Public (GNC)",
-                            "badge": ag.get("type_badge", "Standard"),
-                            "source": "Agents_Publics",
-                        })
+                            }
+                        )
     except Exception as e:
         st.warning(f"Note (Agents_Publics) : {e}")
 
@@ -297,39 +321,55 @@ def fetch_mouvements_jour(site_nom: str, site_uuid: str, date_cible: datetime.da
                 pr_site_id = str(pr.get("id_site", ""))
                 pr_statut = pr.get("statut", "")
 
-                match_site = (str(site_uuid) in sites_prest) or (pr_site_id == str(site_uuid))
+                match_site = (str(site_uuid) in sites_prest) or (
+                    pr_site_id == str(site_uuid)
+                )
 
                 if match_site:
-                    nom_complet = f"{pr.get('nom', '').upper()} {pr.get('prenom', '')}".strip()
+                    nom_complet = (
+                        f"{pr.get('nom', '').upper()} {pr.get('prenom', '')}".strip()
+                    )
                     item_id = str(pr.get("id"))
                     ev_bdd = pointages_bdd.get(item_id, {})
                     statut_mvt = ev_bdd.get("statut_passage", "")
 
-                    # 🎯 FILTRAGE : Si validé par la Sûreté, l'arrivée est traitée et masquée
-                    if (pr.get("date_debut_validite") == date_str) and (pr_statut in STATUTS_ARRIVEE):
+                    if (pr.get("date_debut_validite") == date_str) and (
+                        pr_statut in STATUTS_ARRIVEE
+                    ):
                         if statut_mvt != "SURETE_VALIDE":
-                            arrivants.append({
+                            arrivants.append(
+                                {
+                                    "id": item_id,
+                                    "id_ident": pr.get("id_ident"),
+                                    "nom": nom_complet,
+                                    "organisme": pr.get("agent_referent_gnc")
+                                    or "Prestataire Externe",
+                                    "type": "Prestataire",
+                                    "type_badge": pr.get("type_badge", "N/A"),
+                                    "niveau_hab": pr.get(
+                                        "niveau_habilitation", "Niveau 1"
+                                    ),
+                                    "service_str": pr.get("societe")
+                                    or "Prestataire Externe",
+                                    "source": "Prestataires",
+                                    "pointage_bdd": ev_bdd,
+                                }
+                            )
+
+                    if (pr.get("date_fin_prestation") == date_str) and (
+                        pr_statut in STATUTS_DEPART
+                    ):
+                        departs.append(
+                            {
                                 "id": item_id,
                                 "id_ident": pr.get("id_ident"),
                                 "nom": nom_complet,
-                                "organisme": pr.get("agent_referent_gnc") or "Prestataire Externe",
-                                "type": "Prestataire",
-                                "type_badge": pr.get("type_badge", "N/A"),
-                                "niveau_hab": pr.get("niveau_habilitation", "Niveau 1"),
-                                "service_str": pr.get("societe") or "Prestataire Externe",
+                                "organisme": pr.get("agent_referent_gnc")
+                                or "Prestataire Externe",
+                                "badge": pr.get("type_badge", "Temporaire"),
                                 "source": "Prestataires",
-                                "pointage_bdd": ev_bdd,
-                            })
-
-                    if (pr.get("date_fin_prestation") == date_str) and (pr_statut in STATUTS_DEPART):
-                        departs.append({
-                            "id": item_id,
-                            "id_ident": pr.get("id_ident"),
-                            "nom": nom_complet,
-                            "organisme": pr.get("agent_referent_gnc") or "Prestataire Externe",
-                            "badge": pr.get("type_badge", "Temporaire"),
-                            "source": "Prestataires",
-                        })
+                            }
+                        )
     except Exception as e:
         st.warning(f"Note (Prestataires) : {e}")
 
@@ -337,14 +377,20 @@ def fetch_mouvements_jour(site_nom: str, site_uuid: str, date_cible: datetime.da
 
 
 @st.fragment(run_every=300)
-def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: datetime.date, est_admin: bool):
+def render_mouvements_console(
+    site_actuel: str, site_uuid: str, date_cible: datetime.date, est_admin: bool
+):
     """Fragment Streamlit réactualisé toutes les 5 minutes (300 secondes)."""
     injecter_style_css()
 
     now_str = get_now_nc().strftime("%H:%M:%S")
-    st.info(f"🕒 **Console Active** | Auto-synchro BDD : {now_str} | Site : **{site_actuel}**")
+    st.info(
+        f"🕒 **Console Active** | Auto-synchro BDD : {now_str} | Site : **{site_actuel}**"
+    )
 
-    liste_arrivants, liste_departs = fetch_mouvements_jour(site_actuel, site_uuid, date_cible)
+    liste_arrivants, liste_departs = fetch_mouvements_jour(
+        site_actuel, site_uuid, date_cible
+    )
     nb_arrivants = len(liste_arrivants)
     nb_departs = len(liste_departs)
 
@@ -376,21 +422,31 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
         )
 
     st.markdown("<br>", unsafe_allow_html=True)
-    tab_arrivants, tab_departs = st.tabs([f"📥 ARRIVÉES EN ATTENTE ({nb_arrivants})", f"📤 DÉPARTS / BADGES À RÉCUPÉRER ({nb_departs})"])
-    
+    tab_arrivants, tab_departs = st.tabs(
+        [
+            f"📥 ARRIVÉES EN ATTENTE ({nb_arrivants})",
+            f"📤 DÉPARTS / BADGES À RÉCUPÉRER ({nb_departs})",
+        ]
+    )
+
     user_info = st.session_state.get("user_profile", {})
     agent_connecte = user_info.get("full_name") or f"Agent PC ({site_actuel})"
 
     # --- TAB 1 : ARRIVÉES ---
     with tab_arrivants:
-        st.subheader(f"📋 Nouveaux Arrivants du {date_cible.strftime('%d/%m/%Y')} sur {site_actuel}")
+        st.subheader(
+            f"📋 Nouveaux Arrivants du {date_cible.strftime('%d/%m/%Y')} sur {site_actuel}"
+        )
 
         if liste_arrivants:
             for item in liste_arrivants:
                 ev_bdd = item.get("pointage_bdd", {})
                 statut_bdd = ev_bdd.get("statut_passage", "")
 
-                passage_deja_enregistre = statut_bdd in ["AGENT_VALIDE", "SURETE_VALIDE"]
+                passage_deja_enregistre = statut_bdd in [
+                    "AGENT_VALIDE",
+                    "SURETE_VALIDE",
+                ]
                 surete_deja_enregistree = statut_bdd == "SURETE_VALIDE"
 
                 titre_accordeon = f"👤 {item['nom']} — {item['type']} ({item['organisme']}) | Service: {item.get('service_str', 'Non défini')}"
@@ -402,17 +458,25 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
                 with st.expander(titre_accordeon, expanded=False):
                     c_info1, c_info2, c_info3 = st.columns(3)
                     with c_info1:
-                        st.markdown(f"🏢 **Service / Entité :** `{item.get('service_str', 'Non défini')}`")
+                        st.markdown(
+                            f"🏢 **Service / Entité :** `{item.get('service_str', 'Non défini')}`"
+                        )
                     with c_info2:
-                        st.markdown(f"👤 **Responsable interne :** `{item.get('organisme', 'Non renseigné')}`")
+                        st.markdown(
+                            f"👤 **Responsable interne :** `{item.get('organisme', 'Non renseigné')}`"
+                        )
                     with c_info3:
-                        st.markdown(f"🔑 **Habilitation AEOS :** `{item.get('niveau_hab', 'Niveau 1')}`")
+                        st.markdown(
+                            f"🔑 **Habilitation AEOS :** `{item.get('niveau_hab', 'Niveau 1')}`"
+                        )
 
                     st.markdown("---")
                     st.markdown("##### 🛂 1. Contrôle d'Identité (Agent de Garde)")
                     f_col1, f_col2 = st.columns(2)
 
-                    val_type_piece = ev_bdd.get("type_piece", "Carte Nationale d'Identité")
+                    val_type_piece = ev_bdd.get(
+                        "type_piece", "Carte Nationale d'Identité"
+                    )
                     val_num_piece = ev_bdd.get("num_piece", "")
 
                     with f_col1:
@@ -425,7 +489,24 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
                                 "Carte Professionnelle / Badge Officiel",
                                 "Titre de Séjour",
                             ],
-                            index=["Carte Nationale d'Identité", "Passeport", "Permis de conduire", "Carte Professionnelle / Badge Officiel", "Titre de Séjour"].index(val_type_piece) if val_type_piece in ["Carte Nationale d'Identité", "Passeport", "Permis de conduire", "Carte Professionnelle / Badge Officiel", "Titre de Séjour"] else 0,
+                            index=(
+                                [
+                                    "Carte Nationale d'Identité",
+                                    "Passeport",
+                                    "Permis de conduire",
+                                    "Carte Professionnelle / Badge Officiel",
+                                    "Titre de Séjour",
+                                ].index(val_type_piece)
+                                if val_type_piece
+                                in [
+                                    "Carte Nationale d'Identité",
+                                    "Passeport",
+                                    "Permis de conduire",
+                                    "Carte Professionnelle / Badge Officiel",
+                                    "Titre de Séjour",
+                                ]
+                                else 0
+                            ),
                             key=f"tp_{item['id']}",
                             disabled=passage_deja_enregistre,
                         )
@@ -439,7 +520,11 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
                             disabled=passage_deja_enregistre,
                         )
 
-                    libelle_bouton_p1 = "🔒 Passage déjà consigné au PC Sécurité (Enregistré en BDD)" if passage_deja_enregistre else "📝 Enregistrer le passage au poste de garde"
+                    libelle_bouton_p1 = (
+                        "🔒 Passage déjà consigné au PC Sécurité (Enregistré en BDD)"
+                        if passage_deja_enregistre
+                        else "📝 Enregistrer le passage au poste de garde"
+                    )
 
                     btn_agent_passage = st.button(
                         libelle_bouton_p1,
@@ -456,7 +541,15 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
                             now_dt = get_now_nc()
                             heure_passage = now_dt.strftime("%H:%M")
 
-                            if enregistrer_pointage_agent_bdd(site_uuid, item["id"], item["nom"], item["organisme"], type_piece, num_piece.strip(), agent_connecte):
+                            if enregistrer_pointage_agent_bdd(
+                                site_uuid,
+                                item["id"],
+                                item["nom"],
+                                item["organisme"],
+                                type_piece,
+                                num_piece.strip(),
+                                agent_connecte,
+                            ):
                                 notifier_surete_passage(
                                     site=site_actuel,
                                     nom_personne=item["nom"],
@@ -466,14 +559,25 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
                                     num_piece=num_piece.strip(),
                                     agent_garde=agent_connecte,
                                 )
-                                st.success(f"🎉 Passage de **{item['nom']}** enregistré à **{heure_passage}** !")
-                                st.toast("Passage gravé en BDD & Sûreté notifiée ✉️", icon="✅")
+                                st.success(
+                                    f"🎉 Passage de **{item['nom']}** enregistré à **{heure_passage}** !"
+                                )
+                                st.toast(
+                                    "Passage gravé en BDD & Sûreté notifiée ✉️",
+                                    icon="✅",
+                                )
                                 st.rerun()
 
                     st.markdown("---")
-                    st.markdown("##### ⚙️ 2. Check-List de Conformité & Émargement (Chargé de Sûreté / Admin)")
+                    st.markdown(
+                        "##### ⚙️ 2. Check-List de Conformité & Émargement (Chargé de Sûreté / Admin)"
+                    )
 
-                    desactiver_p2 = (not est_admin) or (not passage_deja_enregistre) or surete_deja_enregistree
+                    desactiver_p2 = (
+                        (not est_admin)
+                        or (not passage_deja_enregistre)
+                        or surete_deja_enregistree
+                    )
 
                     chk_photo_val = ev_bdd.get("check_photo", False)
                     chk_inc_val = ev_bdd.get("check_incendie", False)
@@ -483,21 +587,49 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
                     with st.container(border=True):
                         chk1, chk2, chk3, chk4 = st.columns(4)
                         with chk1:
-                            chk_photo = st.checkbox("📷 Photo conforme", value=chk_photo_val, key=f"photo_{item['id']}", disabled=desactiver_p2)
+                            chk_photo = st.checkbox(
+                                "📷 Photo conforme",
+                                value=chk_photo_val,
+                                key=f"photo_{item['id']}",
+                                disabled=desactiver_p2,
+                            )
                         with chk2:
-                            chk_inc = st.checkbox("🚨 Consignes Incendie", value=chk_inc_val, key=f"inc_{item['id']}", disabled=desactiver_p2)
+                            chk_inc = st.checkbox(
+                                "🚨 Consignes Incendie",
+                                value=chk_inc_val,
+                                key=f"inc_{item['id']}",
+                                disabled=desactiver_p2,
+                            )
                         with chk3:
-                            chk_perm = st.checkbox("🪪 Permis de conduire", value=chk_perm_val, key=f"perm_{item['id']}", disabled=desactiver_p2)
+                            chk_perm = st.checkbox(
+                                "🪪 Permis de conduire",
+                                value=chk_perm_val,
+                                key=f"perm_{item['id']}",
+                                disabled=desactiver_p2,
+                            )
                         with chk4:
-                            chk_velo = st.checkbox("🚲 Accès Parking Vélo", value=chk_velo_val, key=f"velo_{item['id']}", disabled=desactiver_p2)
+                            chk_velo = st.checkbox(
+                                "🚲 Accès Parking Vélo",
+                                value=chk_velo_val,
+                                key=f"velo_{item['id']}",
+                                disabled=desactiver_p2,
+                            )
 
                     if not passage_deja_enregistre:
-                        st.caption("⏳ **En attente de l'étape 1 :** L'agent de garde doit d'abord enregistrer le contrôle d'identité.")
+                        st.caption(
+                            "⏳ **En attente de l'étape 1 :** L'agent de garde doit d'abord enregistrer le contrôle d'identité."
+                        )
                     elif not est_admin:
-                        st.caption("🔒 **Information Poste de Garde :** La check-list et l'émargement final sont réservés au Chargé de Sûreté et Administrateurs.")
+                        st.caption(
+                            "🔒 **Information Poste de Garde :** La check-list et l'émargement final sont réservés au Chargé de Sûreté et Administrateurs."
+                        )
                     else:
                         st.markdown("<br>", unsafe_allow_html=True)
-                        libelle_bouton_p2 = "🔒 Émargement Sûreté déjà validé" if surete_deja_enregistree else f"🏁 Valider l'Émargement Sûreté pour {item['nom']}"
+                        libelle_bouton_p2 = (
+                            "🔒 Émargement Sûreté déjà validé"
+                            if surete_deja_enregistree
+                            else f"🏁 Valider l'Émargement Sûreté pour {item['nom']}"
+                        )
 
                         btn_cloturer_final = st.button(
                             libelle_bouton_p2,
@@ -512,45 +644,64 @@ def render_mouvements_console(site_actuel: str, site_uuid: str, date_cible: date
                                 "photo": chk_photo,
                                 "incendie": chk_inc,
                                 "permis": chk_perm,
-                                "velo": chk_velo
+                                "velo": chk_velo,
                             }
-                            if enregistrer_emargement_surete_bdd(item["id"], check_data, agent_connecte):
-                                st.success(f"🏁 Émargement Sûreté validé pour **{item['nom']}** !")
+                            if enregistrer_emargement_surete_bdd(
+                                item["id"], check_data, agent_connecte
+                            ):
+                                st.success(
+                                    f"🏁 Émargement Sûreté validé pour **{item['nom']}** !"
+                                )
                                 st.toast("Émargement verrouillé en BDD", icon="🔒")
                                 st.rerun()
 
         else:
-            st.info(f"ℹ️ Aucune arrivée en attente pour le site {site_actuel} à la date du {date_cible.strftime('%d/%m/%Y')}.")
+            st.info(
+                f"ℹ️ Aucune arrivée en attente pour le site {site_actuel} à la date du {date_cible.strftime('%d/%m/%Y')}."
+            )
 
     # --- TAB 2 : DÉPARTS ---
     with tab_departs:
-        st.subheader(f"🚪 Fin d'Accès & Restitution de Badges du {date_cible.strftime('%d/%m/%Y')} sur {site_actuel}")
+        st.subheader(
+            f"🚪 Fin d'Accès & Restitution de Badges du {date_cible.strftime('%d/%m/%Y')} sur {site_actuel}"
+        )
 
         if liste_departs:
             for item in liste_departs:
-                st.markdown(f"#### 👤 {item['nom']} — Organisme/Ref : {item['organisme']}")
+                st.markdown(
+                    f"#### 👤 {item['nom']} — Organisme/Ref : {item['organisme']}"
+                )
                 col_dep_info, col_dep_action = st.columns([3, 1.5])
 
                 with col_dep_info:
-                    st.warning(f"⚠️ **Consigne :** Récupérer le badge temporaire/accès (Type: **{item['badge']}**) avant départ définitif.")
+                    st.warning(
+                        f"⚠️ **Consigne :** Récupérer le badge temporaire/accès (Type: **{item['badge']}**) avant départ définitif."
+                    )
 
                 with col_dep_action:
                     key_dep_valide = f"depart_valide_{item['id']}"
                     dep_enregistre = st.session_state.get(key_dep_valide, False)
 
+                    # 🎯 CORRECTIF : Le bouton est désormais cliquable par TOUS les agents du poste de garde !
                     if st.button(
-                        "🔒 Badge Récupéré & Validé" if dep_enregistre else "🚪 Valider Départ & Badge Récupéré",
+                        (
+                            "🔒 Badge Récupéré & Validé"
+                            if dep_enregistre
+                            else "🚪 Valider Départ & Badge Récupéré"
+                        ),
                         key=f"btn_dep_{item['id']}",
                         type="secondary" if dep_enregistre else "primary",
                         use_container_width=True,
-                        disabled=(not est_admin) or dep_enregistre,
+                        disabled=dep_enregistre,
                     ):
                         st.session_state[key_dep_valide] = True
                         st.toast("Départ validé !", icon="🚪")
                         st.rerun()
                 st.markdown("---")
         else:
-            st.info(f"ℹ️ Aucun départ/fin d'accès prévu pour le site {site_actuel} à la date du {date_cible.strftime('%d/%m/%Y')}.")
+            st.info(
+                f"ℹ️ Aucun départ/fin d'accès prévu pour le site {site_actuel} à la date du {date_cible.strftime('%d/%m/%Y')}."
+            )
 
 
 def show():
@@ -573,23 +724,27 @@ def show():
     user_info = st.session_state.get("user_profile", {})
 
     raw_role = (
-        role_param 
-        or user_info.get("role") 
-        or user_info.get("role_name") 
+        role_param
+        or user_info.get("role")
+        or user_info.get("role_name")
         or st.session_state.get("role", "AGENT_SECU")
     )
     role_clean = str(raw_role).upper().strip()
     full_name = str(user_param or user_info.get("full_name", "")).upper()
 
     ROLES_AUTORISES = [
-        "ADMIN", "SUPER_ADMIN", "ADMINISTRATEUR", 
-        "CHARGE_SURETE", "CHARGE DE SURETE", "COS"
+        "ADMIN",
+        "SUPER_ADMIN",
+        "ADMINISTRATEUR",
+        "CHARGE_SURETE",
+        "CHARGE DE SURETE",
+        "COS",
     ]
-    
+
     est_admin_session = (
-        role_clean in ROLES_AUTORISES 
-        or "ADMIN" in role_clean 
-        or "SURETE" in role_clean 
+        role_clean in ROLES_AUTORISES
+        or "ADMIN" in role_clean
+        or "SURETE" in role_clean
         or "KUTER" in full_name
     )
 
@@ -625,7 +780,11 @@ def show():
 
     with col_site:
         if site_cle_admin or est_admin_session:
-            idx_defaut = noms_sites_valides.index(site_sollicite) if site_sollicite in noms_sites_valides else 0
+            idx_defaut = (
+                noms_sites_valides.index(site_sollicite)
+                if site_sollicite in noms_sites_valides
+                else 0
+            )
             site_selectionne = st.selectbox(
                 "📍 Site de sécurité (Supervision) :",
                 options=noms_sites_valides,
@@ -649,7 +808,10 @@ def show():
             st.rerun()
 
     render_mouvements_console(
-        site_actuel, site_uuid, date_selectionnee, est_admin=(site_cle_admin or est_admin_session)
+        site_actuel,
+        site_uuid,
+        date_selectionnee,
+        est_admin=(site_cle_admin or est_admin_session),
     )
 
 
