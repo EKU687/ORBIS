@@ -62,22 +62,16 @@ def send_alert_email(
             )
 
             if smtp_port == 465:
-                with smtplib.SMTP_SSL(
-                    smtp_server, smtp_port, timeout=15
-                ) as server:
+                with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=15) as server:
                     server.login(smtp_user, smtp_password)
                     server.sendmail(smtp_user, recipient_email, msg.as_string())
             else:
-                with smtplib.SMTP(
-                    smtp_server, smtp_port, timeout=15
-                ) as server:
+                with smtplib.SMTP(smtp_server, smtp_port, timeout=15) as server:
                     server.starttls()
                     server.login(smtp_user, smtp_password)
                     server.sendmail(smtp_user, recipient_email, msg.as_string())
 
-            print(
-                f"✅ [SMTP SUCCESS] E-mail transmis avec succès à {recipient_email}"
-            )
+            print(f"✅ [SMTP SUCCESS] E-mail transmis avec succès à {recipient_email}")
             return True
 
         except Exception as e:
@@ -106,7 +100,7 @@ def envoyer_notification_passage_poste_securite(
     agent_garde: str,
 ):
     """Envoie un email de notification lors d'un passage au PC Sécurité (Mode Asynchrone pour Streamlit)."""
-    sujet = f"🛡️ [SÛRETÉ PC GARDE] Alerte Anomalie Ronde - {site} : {nom_personne}"
+    sujet = f"🛡️ [SÛRETÉ PC GARDE] Alerte Arrivée - {site} : {nom_personne}"
     corps_html = f"""
     <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
         <h3 style="color: #0d6efd;">🛂 Pointage d'Entrée au PC Sécurité</h3>
@@ -120,9 +114,7 @@ def envoyer_notification_passage_poste_securite(
         <p style="font-size: 12px; color: #6c757d;"><i>Notification automatique générée par IDENTIS - Mouvements Sécurité.</i></p>
     </div>
     """
-    send_alert_email(
-        subject=sujet, body_html=corps_html, async_send=True
-    )
+    send_alert_email(subject=sujet, body_html=corps_html, async_send=True)
 
 
 def envoyer_notification_anomalie_ronde(
@@ -133,9 +125,7 @@ def envoyer_notification_anomalie_ronde(
     agent_garde: str,
 ):
     """Envoie une alerte email dédiée en cas d'anomalie détectée pendant une ronde (Mode Asynchrone)."""
-    sujet = (
-        f"🛡️ [SÛRETÉ PC GARDE] Alerte Anomalie - Site {site} : {titre_ronde}"
-    )
+    sujet = f"🛡️ [SÛRETÉ PC GARDE] Alerte Anomalie - Site {site} : {titre_ronde}"
     corps_html = f"""
     <html>
         <body style="font-family: Arial, sans-serif; color: #333;">
@@ -154,6 +144,4 @@ def envoyer_notification_anomalie_ronde(
         </body>
     </html>
     """
-    send_alert_email(
-        subject=sujet, body_html=corps_html, async_send=True
-    )
+    send_alert_email(subject=sujet, body_html=corps_html, async_send=True)
