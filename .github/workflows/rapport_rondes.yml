@@ -3,7 +3,7 @@ name: 📊 Rapport Automatique des Rondes (ORBIS V3)
 on:
   schedule:
     # 1. Rapport de Nuit à 06:00 NC (19:00 UTC la veille)
-    # - cron: '0 19 * * *'
+    - cron: '0 19 * * *'
     
     # 2. Rapport de Journée (WE & Fériés) à 20:00 NC (09:00 UTC le jour même)
     - cron: '0 9 * * *'
