@@ -4,16 +4,18 @@ Contrôle basé directement sur le registre des événements (mc_evenements).
 Supporte les vacations de nuit ainsi que les rondes de jour (Week-ends & Jours Fériés NC).
 """
 
+import argparse
+import datetime
 from pathlib import Path
 import sys
+import zoneinfo
 
 # Inclusion de la racine du projet
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-import datetime
-import zoneinfo
+import holidays
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 from utils.db_client import supabase
@@ -36,43 +38,13 @@ CRENEAUX_NUIT = [
     "05:00",
 ]
 
-CRENEAUX_JOURNEE = [
-    "06:00",
-    "07:00",
-    "08:00",
-    "09:00",
-    "10:00",
-    "11:00",
-    "12:00",
-    "13:00",
-    "14:00",
-    "15:00",
-    "16:00",
-    "17:00",
-    "18:00",
-    "19:00",
-]
-
-# Calendrier des jours fériés légaux en Nouvelle-Calédonie
-JOURS_FERIES_NC = {
-    datetime.date(2026, 1, 1),  # Nouvel An
-    datetime.date(2026, 4, 6),  # Lundi de Pâques
-    datetime.date(2026, 5, 1),  # Fête du Travail
-    datetime.date(2026, 5, 8),  # Victoire 1945
-    datetime.date(2026, 5, 14),  # Ascension
-    datetime.date(2026, 5, 25),  # Lundi de Pentecôte
-    datetime.date(2026, 7, 14),  # Fête Nationale
-    datetime.date(2026, 8, 15),  # Assomption
-    datetime.date(2026, 9, 24),  # Fête de la Citoyenneté
-    datetime.date(2026, 11, 1),  # Toussaint
-    datetime.date(2026, 11, 11),  # Armistice 1918
-    datetime.date(2026, 12, 25),  # Noël
-}
+CRENEAUX_JOURNEE = [f"{h:02d}:00" for h in range(6, 20)]  # 06:00 à 19:00
 
 
 def est_jour_non_travaille(d: datetime.date) -> bool:
-    """Retourne True si la date est un Samedi, Dimanche ou Jour Férié NC."""
-    return d.weekday() in (5, 6) or d in JOURS_FERIES_NC
+    """Retourne True si la date est un Samedi, Dimanche ou Jour Férié NC (dynamique via holidays)."""
+    nc_holidays = holidays.country_holidays("NC", years=d.year)
+    return d.weekday() in (5, 6) or d in nc_holidays
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5), reraise=False)
@@ -169,11 +141,13 @@ def generer_et_envoyer_rapport_nuit_tous_sites():
     today = now_nc.date()
     yesterday = today - datetime.timedelta(days=1)
 
-    # Fenêtre ISO élargie : de 20:00 (hier) à 06:30 (ce matin)
+    # Fenêtre ISO : de 20:00 (hier) à 05:59 (ce matin)
     dt_debut_nuit = datetime.datetime.combine(
         yesterday, datetime.time(20, 0), tzinfo=TZ_NC
     )
-    dt_fin_nuit = datetime.datetime.combine(today, datetime.time(6, 30), tzinfo=TZ_NC)
+    dt_fin_nuit = datetime.datetime.combine(
+        today, datetime.time(5, 59, 59), tzinfo=TZ_NC
+    )
 
     sites = fetch_sites_actifs() or ["SITE OUEMO", "SITE DOUMER"]
 
@@ -182,7 +156,6 @@ def generer_et_envoyer_rapport_nuit_tous_sites():
             site_id, dt_debut_nuit.isoformat(), dt_fin_nuit.isoformat()
         )
 
-        # Indexation par heure cible (HH:MM)
         rondes_map = {}
         for ev in evenements:
             h_cible = extraire_heure_cible(ev.get("reference", ""))
@@ -196,7 +169,7 @@ def generer_et_envoyer_rapport_nuit_tous_sites():
         sujet = f"📊 Rapport Rondes de Nuit — {site_id} ({today.strftime('%d/%m/%Y')})"
         corps_html = f"""
         <h2>🔦 Bilan des Rondes de Nuit — {site_id}</h2>
-        <p><b>Période d'analyse :</b> Du {yesterday.strftime('%d/%m/%Y')} 20:00 au {today.strftime('%d/%m/%Y')} 06:00</p>
+        <p><b>Période d'analyse :</b> Du {yesterday.strftime('%d/%m/%Y')} 20:00 au {today.strftime('%d/%m/%Y')} 05:00</p>
         <ul>
             <li><b>Rondes effectuées :</b> {nb_ok} / {total}</li>
             <li><b>Rondes manquées :</b> <span style="color:red;"><b>{nb_ko}</b></span></li>
@@ -245,9 +218,11 @@ def generer_et_envoyer_rapport_journee_si_besoin():
         )
         return
 
-    # Fenêtre ISO de 06:00 à 20:30 (aujourd'hui)
+    # Fenêtre ISO de 06:00 à 19:59 (aujourd'hui)
     dt_debut_jour = datetime.datetime.combine(today, datetime.time(6, 0), tzinfo=TZ_NC)
-    dt_fin_jour = datetime.datetime.combine(today, datetime.time(20, 30), tzinfo=TZ_NC)
+    dt_fin_jour = datetime.datetime.combine(
+        today, datetime.time(19, 59, 59), tzinfo=TZ_NC
+    )
 
     sites = fetch_sites_actifs() or ["SITE OUEMO", "SITE DOUMER"]
 
@@ -269,7 +244,7 @@ def generer_et_envoyer_rapport_journee_si_besoin():
         sujet = f"☀️ Rapport Rondes de Journée (WE/Férié) — {site_id} ({today.strftime('%d/%m/%Y')})"
         corps_html = f"""
         <h2>☀️ Bilan des Rondes de Journée — {site_id}</h2>
-        <p><b>Période d'analyse :</b> Le {today.strftime('%d/%m/%Y')} de 06:00 à 20:00 (Jour Non Travillé)</p>
+        <p><b>Période d'analyse :</b> Le {today.strftime('%d/%m/%Y')} de 06:00 à 19:00 (Jour Non Travillé)</p>
         <ul>
             <li><b>Rondes effectuées :</b> {nb_ok} / {total}</li>
             <li><b>Rondes manquées :</b> <span style="color:red;"><b>{nb_ko}</b></span></li>
@@ -305,8 +280,39 @@ def generer_et_envoyer_rapport_journee_si_besoin():
 
 
 if __name__ == "__main__":
-    # 1. Toujours lancer la vérification de nuit
-    generer_et_envoyer_rapport_nuit_tous_sites()
+    parser = argparse.ArgumentParser(
+        description="Générateur de rapport de rondes ORBIS"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["auto", "nuit", "jour"],
+        default="auto",
+        help="Mode d'exécution du rapport (auto: selon l'heure courante NC)",
+    )
+    args = parser.parse_args()
 
-    # 2. Lancer la vérification de jour si jour non travaillé
-    generer_et_envoyer_rapport_journee_si_besoin()
+    now_nc = datetime.datetime.now(TZ_NC)
+
+    if args.mode == "nuit":
+        generer_et_envoyer_rapport_nuit_tous_sites()
+    elif args.mode == "jour":
+        generer_et_envoyer_rapport_journee_si_besoin()
+    else:
+        # Mode AUTO basé sur l'heure courante à Nouméa :
+        # - Si exécuté le matin (ex: entre 04:00 et 12:00) -> Rapport de Nuit
+        # - Si exécuté le soir (ex: entre 18:00 et 23:59) -> Rapport de Journée
+        if 4 <= now_nc.hour < 12:
+            print(
+                f"⏰ Execution Matin ({now_nc.strftime('%H:%M')} NC) -> Lancement du Rapport de Nuit."
+            )
+            generer_et_envoyer_rapport_nuit_tous_sites()
+        elif 18 <= now_nc.hour <= 23:
+            print(
+                f"⏰ Execution Soir ({now_nc.strftime('%H:%M')} NC) -> Lancement du Rapport de Journée."
+            )
+            generer_et_envoyer_rapport_journee_si_besoin()
+        else:
+            print(
+                f"⚠️ Heure d'exécution atypique ({now_nc.strftime('%H:%M')} NC) : Exécution de sécurité du Rapport de Nuit."
+            )
+            generer_et_envoyer_rapport_nuit_tous_sites()
