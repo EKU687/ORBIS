@@ -217,7 +217,7 @@ def fetch_mouvements_jour(site_nom: str, site_uuid: str, date_cible: datetime.da
     if not site_uuid:
         return arrivants, departs
 
-    STATUTS_ARRIVEE = ["IMPRIME", "A_LIVRER", "EN_COURS_NEDAP"]
+    STATUTS_ARRIVEE = ["IMPRIME", "A_LIVRER", "EN_COURS_NEDAP", "EN_ATTENTE_PHOTO"]
     STATUTS_DEPART = ["ACTIF", "A_LIVRER", "IMPRIME"]
     statuts_globaux = list(set(STATUTS_ARRIVEE + STATUTS_DEPART))
 
