@@ -1,23 +1,37 @@
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 import os
-import smtplib
 import threading
+from pathlib import Path
+import requests
 import streamlit as st
+
+# Chargement automatique du .env (méthode CENTAURE via find_dotenv)
+try:
+    from dotenv import load_dotenv, find_dotenv
+
+    load_dotenv(find_dotenv())
+except ImportError:
+    # Fonction de secours native si python-dotenv n'est pas installé
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if env_path.exists():
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip("\"'"))
 
 
 def get_secret(key: str, default: str = "") -> str:
-    """Helper universel : Lit d'abord les variables d'environnement système (GitHub Actions),
-
+    """Helper universel : Lit d'abord les variables d'environnement système (Render / GitHub Actions / .env),
     puis bascule sur st.secrets (Streamlit Cloud).
     """
-    # 1. Priorité aux variables d'environnement (GitHub Actions / Serveur)
+    # 1. Priorité aux variables d'environnement système (Render / GitHub Actions / Local .env)
     if key in os.environ and os.environ[key]:
         return os.environ[key]
 
-    # 2. Fallback sur st.secrets (Streamlit Cloud / Local)
+    # 2. Fallback sur st.secrets (Streamlit Cloud)
     try:
-        if key in st.secrets:
+        if key in st.secrets and st.secrets[key]:
             return str(st.secrets[key])
     except Exception:
         pass
@@ -31,62 +45,75 @@ def send_alert_email(
     recipient_email: str = "eric.kuter@gouv.nc",
     async_send: bool = False,
 ) -> bool:
-    """Fonction principale d'envoi d'e-mail HTML via SMTP (Google Workspace / Gmail).
+    """Fonction principale d'envoi d'e-mail HTML via l'API REST HTTP v3 de Brevo.
 
-    :param async_send: Si True, l'envoi se fait dans un Thread (idéal pour
-    Streamlit). Si False, l'envoi est synchrone (obligatoire pour GitHub
-    Actions).
+    :param async_send: Si True, l'envoi se fait dans un Thread (idéal pour Streamlit).
+                       Si False, l'envoi est synchrone (obligatoire pour GitHub Actions et tests).
     """
 
     def _envoyer():
-        smtp_server = get_secret("SMTP_SERVER", "smtp.gmail.com")
-        smtp_port = int(get_secret("SMTP_PORT", "465"))
-        smtp_user = get_secret("SMTP_EMAIL", "")
-        smtp_password = get_secret("SMTP_PASSWORD", "")
+        api_key = get_secret("BREVO_API_KEY", "")
+        sender_email = get_secret("BREVO_SENDER_EMAIL", "")
+        sender_name = get_secret("BREVO_SENDER_NAME", "ORBIS Sûreté")
 
-        if not smtp_user or not smtp_password:
-            msg_err = "❌ [SMTP ERROR] Identifiants SMTP (SMTP_EMAIL / SMTP_PASSWORD) introuvables !"
+        if not api_key or not sender_email:
+            msg_err = "❌ [BREVO ERROR] Clé API ou Email expéditeur (BREVO_API_KEY / BREVO_SENDER_EMAIL) introuvables !"
             print(msg_err)
             return False
 
-        # Construction du message
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = f"ORBIS Sûreté <{smtp_user}>"
-        msg["To"] = recipient_email
-        msg.attach(MIMEText(body_html, "html", "utf-8"))
+        # Configuration de la requête HTTP REST Brevo v3
+        url = "https://api.brevo.com/v3/smtp/email"
+        headers = {
+            "accept": "application/json",
+            "api-key": api_key,
+            "content-type": "application/json",
+        }
+
+        # Découpage si plusieurs destinataires séparés par des virgules
+        if isinstance(recipient_email, str):
+            to_list = [
+                {"email": e.strip()} for e in recipient_email.split(",") if e.strip()
+            ]
+        else:
+            to_list = [{"email": e} for e in recipient_email]
+
+        payload = {
+            "sender": {"name": sender_name, "email": sender_email},
+            "to": to_list,
+            "subject": subject,
+            "htmlContent": body_html,
+        }
 
         try:
-            print(
-                f"📧 Connexion SMTP à {smtp_server}:{smtp_port} pour {recipient_email}..."
-            )
+            print(f"📧 Envoi de l'e-mail via API Brevo à {recipient_email}...")
+            response = requests.post(url, json=payload, headers=headers, timeout=15)
 
-            if smtp_port == 465:
-                with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=15) as server:
-                    server.login(smtp_user, smtp_password)
-                    server.sendmail(smtp_user, recipient_email, msg.as_string())
+            if response.status_code in [200, 201, 202]:
+                print(
+                    f"✅ [BREVO SUCCESS] E-mail transmis avec succès à {recipient_email}"
+                )
+                return True
             else:
-                with smtplib.SMTP(smtp_server, smtp_port, timeout=15) as server:
-                    server.starttls()
-                    server.login(smtp_user, smtp_password)
-                    server.sendmail(smtp_user, recipient_email, msg.as_string())
-
-            print(f"✅ [SMTP SUCCESS] E-mail transmis avec succès à {recipient_email}")
-            return True
+                msg_err = (
+                    f"❌ [BREVO ERROR] Code {response.status_code} : {response.text}"
+                )
+                print(msg_err)
+                if not async_send:
+                    raise RuntimeError(msg_err)
+                return False
 
         except Exception as e:
-            print(f"❌ [SMTP ERROR] Échec de l'envoi : {e}")
+            print(f"❌ [BREVO ERROR] Échec de l'envoi HTTP : {e}")
             if not async_send:
-                # Si on est dans un script Batch (GitHub Actions), on lève l'erreur pour la voir dans les logs
                 raise e
             return False
 
     if async_send:
-        # Mode Streamlit : Envoi en arrière-plan sans bloquer l'agent
+        # Mode Streamlit : Envoi en arrière-plan sans bloquer l'interface
         threading.Thread(target=_envoyer, daemon=True).start()
         return True
     else:
-        # Mode Batch / GitHub Actions : Envoi direct et bloquant
+        # Mode Batch / GitHub Actions / Test Direct : Envoi bloquant
         return _envoyer()
 
 
