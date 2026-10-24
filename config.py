@@ -6,8 +6,8 @@
 import os
 
 # 🎯 Semantic Versioning (SemVer) : MAJOR.MINOR.PATCH
-APP_VERSION = "3.3.2"
-APP_DATE = "09/10/2026"
+APP_VERSION = "3.3.3"
+APP_DATE = "24/10/2026"
 APP_ENV = "PRODUCTION"  # "BETA" ou "PRODUCTION"
 
 APP_NAME = "ORBIS"

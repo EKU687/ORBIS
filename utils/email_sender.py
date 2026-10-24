@@ -1,16 +1,25 @@
+import logging
 import os
-import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import List, Union
 import requests
-import streamlit as st
 
-# Chargement automatique du .env (méthode CENTAURE via find_dotenv)
+# Configuration du logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger("ORBIS_EMAIL")
+
+# Pool d'exécution d'arrière-plan résilient pour Streamlit
+_EMAIL_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="BrevoWorker")
+
+# Chargement automatique du .env
 try:
-    from dotenv import load_dotenv, find_dotenv
+    from dotenv import find_dotenv, load_dotenv
 
     load_dotenv(find_dotenv())
 except ImportError:
-    # Fonction de secours native si python-dotenv n'est pas installé
     env_path = Path(__file__).resolve().parent.parent / ".env"
     if env_path.exists():
         with open(env_path, "r", encoding="utf-8") as f:
@@ -22,16 +31,15 @@ except ImportError:
 
 
 def get_secret(key: str, default: str = "") -> str:
-    """Helper universel : Lit d'abord les variables d'environnement système (Render / GitHub Actions / .env),
-    puis bascule sur st.secrets (Streamlit Cloud).
-    """
-    # 1. Priorité aux variables d'environnement système (Render / GitHub Actions / Local .env)
-    if key in os.environ and os.environ[key]:
-        return os.environ[key]
+    """Helper universel : Environnement système prioritaire, puis st.secrets sans crash en CLI."""
+    val = os.environ.get(key)
+    if val:
+        return val
 
-    # 2. Fallback sur st.secrets (Streamlit Cloud)
     try:
-        if key in st.secrets and st.secrets[key]:
+        import streamlit as st
+
+        if hasattr(st, "secrets") and key in st.secrets:
             return str(st.secrets[key])
     except Exception:
         pass
@@ -39,82 +47,97 @@ def get_secret(key: str, default: str = "") -> str:
     return default
 
 
+def _execute_brevo_request(
+    subject: str,
+    body_html: str,
+    recipient_email: Union[str, List[str]],
+    sender_name: str,
+    sender_email: str,
+    api_key: str,
+) -> bool:
+    """Effectue l'appel HTTP bloquant vers l'API Brevo v3."""
+    url = "https://api.brevo.com/v3/smtp/email"
+    headers = {
+        "accept": "application/json",
+        "api-key": api_key,
+        "content-type": "application/json",
+    }
+
+    if isinstance(recipient_email, str):
+        to_list = [
+            {"email": e.strip()} for e in recipient_email.split(",") if e.strip()
+        ]
+    else:
+        to_list = [{"email": e.strip()} for e in recipient_email if e.strip()]
+
+    payload = {
+        "sender": {"name": sender_name, "email": sender_email},
+        "to": to_list,
+        "subject": subject,
+        "htmlContent": body_html,
+    }
+
+    try:
+        logger.info(f"📧 Envoi Brevo vers : {[t['email'] for t in to_list]}")
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+
+        if response.status_code in [200, 201, 202]:
+            logger.info("✅ [BREVO SUCCESS] E-mail transmis avec succès.")
+            return True
+        else:
+            logger.error(
+                f"❌ [BREVO ERROR] Statut HTTP {response.status_code} : {response.text}"
+            )
+            return False
+
+    except Exception as e:
+        logger.error(f"❌ [BREVO ERROR] Exception réseau/HTTP : {e}")
+        return False
+
+
 def send_alert_email(
     subject: str,
     body_html: str,
-    recipient_email: str = "eric.kuter@gouv.nc",
+    recipient_email: Union[str, List[str]] = "eric.kuter@gouv.nc",
     async_send: bool = False,
 ) -> bool:
-    """Fonction principale d'envoi d'e-mail HTML via l'API REST HTTP v3 de Brevo.
-
-    :param async_send: Si True, l'envoi se fait dans un Thread (idéal pour Streamlit).
-                       Si False, l'envoi est synchrone (obligatoire pour GitHub Actions et tests).
+    """Envoi d'e-mail HTML via Brevo v3.
+    - async_send=True : utilise un pool de threads pérenne (recommandé pour Streamlit).
+    - async_send=False : synchrone et bloquant (obligatoire pour GitHub Actions / CLI).
     """
+    api_key = get_secret("BREVO_API_KEY", "")
+    sender_email = get_secret("BREVO_SENDER_EMAIL", "")
+    sender_name = get_secret("BREVO_SENDER_NAME", "ORBIS Sûreté")
 
-    def _envoyer():
-        api_key = get_secret("BREVO_API_KEY", "")
-        sender_email = get_secret("BREVO_SENDER_EMAIL", "")
-        sender_name = get_secret("BREVO_SENDER_NAME", "ORBIS Sûreté")
-
-        if not api_key or not sender_email:
-            msg_err = "❌ [BREVO ERROR] Clé API ou Email expéditeur (BREVO_API_KEY / BREVO_SENDER_EMAIL) introuvables !"
-            print(msg_err)
-            return False
-
-        # Configuration de la requête HTTP REST Brevo v3
-        url = "https://api.brevo.com/v3/smtp/email"
-        headers = {
-            "accept": "application/json",
-            "api-key": api_key,
-            "content-type": "application/json",
-        }
-
-        # Découpage si plusieurs destinataires séparés par des virgules
-        if isinstance(recipient_email, str):
-            to_list = [
-                {"email": e.strip()} for e in recipient_email.split(",") if e.strip()
-            ]
-        else:
-            to_list = [{"email": e} for e in recipient_email]
-
-        payload = {
-            "sender": {"name": sender_name, "email": sender_email},
-            "to": to_list,
-            "subject": subject,
-            "htmlContent": body_html,
-        }
-
-        try:
-            print(f"📧 Envoi de l'e-mail via API Brevo à {recipient_email}...")
-            response = requests.post(url, json=payload, headers=headers, timeout=15)
-
-            if response.status_code in [200, 201, 202]:
-                print(
-                    f"✅ [BREVO SUCCESS] E-mail transmis avec succès à {recipient_email}"
-                )
-                return True
-            else:
-                msg_err = (
-                    f"❌ [BREVO ERROR] Code {response.status_code} : {response.text}"
-                )
-                print(msg_err)
-                if not async_send:
-                    raise RuntimeError(msg_err)
-                return False
-
-        except Exception as e:
-            print(f"❌ [BREVO ERROR] Échec de l'envoi HTTP : {e}")
-            if not async_send:
-                raise e
-            return False
+    if not api_key or not sender_email:
+        logger.error(
+            "❌ [BREVO CONFIG] BREVO_API_KEY ou BREVO_SENDER_EMAIL manquant(s)."
+        )
+        return False
 
     if async_send:
-        # Mode Streamlit : Envoi en arrière-plan sans bloquer l'interface
-        threading.Thread(target=_envoyer, daemon=True).start()
+        _EMAIL_EXECUTOR.submit(
+            _execute_brevo_request,
+            subject,
+            body_html,
+            recipient_email,
+            sender_name,
+            sender_email,
+            api_key,
+        )
         return True
     else:
-        # Mode Batch / GitHub Actions / Test Direct : Envoi bloquant
-        return _envoyer()
+        success = _execute_brevo_request(
+            subject,
+            body_html,
+            recipient_email,
+            sender_name,
+            sender_email,
+            api_key,
+        )
+        if not success:
+            raise RuntimeError("Échec de l'envoi d'e-mail Brevo.")
+        return True
 
 
 def envoyer_notification_passage_poste_securite(
@@ -126,7 +149,6 @@ def envoyer_notification_passage_poste_securite(
     num_piece: str,
     agent_garde: str,
 ):
-    """Envoie un email de notification lors d'un passage au PC Sécurité (Mode Asynchrone pour Streamlit)."""
     sujet = f"🛡️ [SÛRETÉ PC GARDE] Alerte Arrivée - {site} : {nom_personne}"
     corps_html = f"""
     <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
@@ -151,7 +173,6 @@ def envoyer_notification_anomalie_ronde(
     details_anomalie: str,
     agent_garde: str,
 ):
-    """Envoie une alerte email dédiée en cas d'anomalie détectée pendant une ronde (Mode Asynchrone)."""
     sujet = f"🛡️ [SÛRETÉ PC GARDE] Alerte Anomalie - Site {site} : {titre_ronde}"
     corps_html = f"""
     <html>
