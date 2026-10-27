@@ -69,10 +69,13 @@ def est_jour_non_ouvre(date_cible: datetime.date) -> tuple[bool, str]:
         return True, "Week-End"
 
     if HAS_HOLIDAYS:
-        feries_nc = holidays.NC(years=date_cible.year)
-        if date_cible in feries_nc:
-            nom_ferie = feries_nc.get(date_cible)
-            return True, f"Jour Férié ({nom_ferie})"
+        try:
+            feries_nc = holidays.NC(years=date_cible.year)
+            if date_cible in feries_nc:
+                nom_ferie = feries_nc.get(date_cible)
+                return True, f"Jour Férié ({nom_ferie})"
+        except Exception:
+            pass
 
     return False, "Jour Ouvré"
 
@@ -80,7 +83,6 @@ def est_jour_non_ouvre(date_cible: datetime.date) -> tuple[bool, str]:
 def generer_grille_rondes_du_jour(date_cible: datetime.date) -> list[dict]:
     """Génère la grille des rondes ordonnée selon la VACATION DE SÛRETÉ (20:00 -> 05:00 puis Journée si non ouvré)."""
     est_non_ouvre, motif = est_jour_non_ouvre(date_cible)
-
     grille = []
 
     # BLOC 1 : SOIRÉE & DÉBUT DE NUIT (20:00 -> 23:00)
@@ -177,26 +179,24 @@ def calculer_statut_creneau(
     h_target, m_target = map(int, heure_cible_str.split(":"))
     date_jour = now_datetime.date()
 
-    # 1. Génération d'un décalage aléatoire déterministe entre 0 et 10 minutes
+    # 1. Décalage aléatoire déterministe entre 0 et 10 minutes
     seed_str = f"{date_jour.isoformat()}_{heure_cible_str}"
     decalage_minutes = int(hashlib.md5(seed_str.encode("utf-8")).hexdigest(), 16) % 11
 
-    # Date cible théorique aujourd'hui
     dt_base = now_datetime.replace(
         hour=h_target, minute=m_target, second=0, microsecond=0
     )
 
-    # 🎯 CORRECTION PASSAGE À MINUIT :
+    # Passage à minuit (VACATION DE NUIT)
     if h_target <= 5 and now_datetime.hour >= 20:
         dt_base += datetime.timedelta(days=1)
 
-    # 2. Définition de l'heure de début effective (+ décalage) et de fin (+30 min)
+    # 2. Définition début (+décalage) et fin (+30 min)
     dt_debut_ronde = dt_base + datetime.timedelta(minutes=decalage_minutes)
     dt_fin_ronde = dt_debut_ronde + datetime.timedelta(minutes=30)
-
     heure_debut_str = dt_debut_ronde.strftime("%H:%M")
 
-    # 3. Évaluation du statut temporel
+    # 3. Statut temporel
     if now_datetime < dt_debut_ronde:
         return "FUTUR", False, heure_debut_str, 0
     elif dt_debut_ronde <= now_datetime <= dt_fin_ronde:
@@ -257,7 +257,6 @@ def envoyer_email_anomalie_ronde(
         return
 
     titre_alerte = f"ANOMALIE RONDE {h_cible} ({type_ronde})"
-
     envoyer_notification_passage_poste_securite(
         site=site,
         nom_personne=titre_alerte,
@@ -293,23 +292,20 @@ def show():
     ][today_dt.weekday()]
 
     st.caption(
-        f"Programme officiel pour le **{nom_jour_fr}"
-        f" {today_dt.strftime('%d/%m/%Y')}** sur le site **{site_actuel}**."
+        f"Programme officiel pour le **{nom_jour_fr} {today_dt.strftime('%d/%m/%Y')}** sur le site **{site_actuel}**."
     )
 
-    # Détection du régime du jour
     est_non_ouvre, motif = est_jour_non_ouvre(today_dt)
     grille_rondes = generer_grille_rondes_du_jour(today_dt)
 
     if est_non_ouvre:
         st.info(
-            f"ℹ️ **Régime {motif} Actif :** Surveillance continue 24h/24."
-            " Rondes extérieures maintenues à 05h00 et 20h00 (pas d'ouverture/fermeture)."
+            f"ℹ️ **Régime {motif} Actif :** Surveillance continue 24h/24. "
+            "Rondes extérieures maintenues à 05h00 et 20h00 (pas d'ouverture/fermeture)."
         )
     else:
         st.info(
-            "ℹ️ **Régime Semaine Actif :** Rondes de Nuit + Ouverture Site"
-            " (05h00) & Fermeture Globale (20h00)."
+            "ℹ️ **Régime Semaine Actif :** Rondes de Nuit + Ouverture Site (05h00) & Fermeture Globale (20h00)."
         )
 
         if 8 <= heure_courante < 16:
@@ -319,14 +315,18 @@ def show():
                 "Les rondes programmées reprendront à 20h00 (Fermeture globale)."
             )
 
-    # 1. Chargement des rondes effectuées aujourd'hui
+    # 1. Chargement OPTIMISÉ des rondes (Seulement les 36 dernières heures pour éviter de tout charger)
     rondes_validees = {}
     try:
+        date_debut_recherche = (now_nc - datetime.timedelta(hours=36)).isoformat()
         res = (
             supabase.table("mc_evenements")
             .select("*")
             .eq("site_id", site_actuel)
             .eq("type_evenement", "RONDE")
+            .gte(
+                "horodatage", date_debut_recherche
+            )  # 👈 OPTIMISATION POUR ÉVITER LES TIMEOUTS
             .execute()
         )
         for ev in res.data or []:
@@ -347,7 +347,7 @@ def show():
         else:
             rondes_a_venir.append(ronde)
 
-    # 3. Création des Onglets
+    # 3. Onglets
     tab_a_faire, tab_effectuees = st.tabs(
         [
             f"⏳ Rondes à venir ({len(rondes_a_venir)})",
@@ -355,7 +355,6 @@ def show():
         ]
     )
 
-    # Fonction utilitaire d'affichage des cartes de rondes
     def render_carte_ronde(ronde: dict):
         h_target = ronde["heure_cible"]
         type_ronde = ronde["type"]
@@ -383,7 +382,6 @@ def show():
 
                 if est_faite:
                     ev_info = rondes_validees[ref_cle]
-                    # 🕒 CONVERSION EXPLICITE FUSEAU NC (UTC+11)
                     dt_valide = formatter_heure_nc(ev_info.get("horodatage", ""))
                     agent_nom = ev_info.get("agent_nom", "Agent")
                     st.success(f"✅ **Effectuée à {dt_valide}** par {agent_nom}")
@@ -421,12 +419,10 @@ def show():
                             notif_surete = False
                             if has_anomalie:
                                 st.error(
-                                    "🚨 Une entrée sera créée automatiquement dans"
-                                    " la Main Courante !"
+                                    "🚨 Une entrée sera créée automatiquement dans la Main Courante !"
                                 )
                                 notif_surete = st.checkbox(
-                                    "✉️ Prévenir immédiatement le Chargé de Sûreté"
-                                    " par Email",
+                                    "✉️ Prévenir immédiatement le Chargé de Sûreté par Email",
                                     value=True,
                                     key=f"notif_{h_target}",
                                 )
@@ -448,8 +444,7 @@ def show():
                                     "horodatage": now_nc_local.isoformat(),
                                     "type_evenement": "RONDE",
                                     "description": (
-                                        f"Ronde {type_ronde} ({h_target} - Début {h_debut_genere}) :"
-                                        f" {observation}"
+                                        f"Ronde {type_ronde} ({h_target} - Début {h_debut_genere}) : {observation}"
                                     ),
                                     "actions_menees": (
                                         "Anomalie signalée et transmise"
@@ -465,23 +460,19 @@ def show():
 
                                     if has_anomalie:
                                         payload_anomalie = {
-                                            "reference": (f"REF-ANO-RONDE-{ref_time}"),
+                                            "reference": f"REF-ANO-RONDE-{ref_time}",
                                             "vacation_id": vac_id,
                                             "site_id": site_actuel,
                                             "agent_nom": agent_connecte,
                                             "horodatage": now_nc_local.isoformat(),
                                             "type_evenement": "ANOMALIE",
                                             "description": (
-                                                f"⚠️ ANOMALIE DÉTECTÉE lors de la"
-                                                f" Ronde {h_target} ({type_ronde}) :"
-                                                f" {observation}"
+                                                f"⚠️ ANOMALIE DÉTECTÉE lors de la Ronde {h_target} ({type_ronde}) : {observation}"
                                             ),
                                             "actions_menees": (
-                                                "Consigné depuis le module Rondes."
-                                                " Sûreté informée."
+                                                "Consigné depuis le module Rondes. Sûreté informée."
                                                 if notif_surete
-                                                else "Consigné depuis le module"
-                                                " Rondes."
+                                                else "Consigné depuis le module Rondes."
                                             ),
                                         }
                                         supabase.table("mc_evenements").insert(
@@ -506,8 +497,7 @@ def show():
                                                 )
                                             except Exception as mail_err:
                                                 st.warning(
-                                                    "Note : Email non transmis"
-                                                    f" ({mail_err})"
+                                                    f"Note : Email non transmis ({mail_err})"
                                                 )
 
                                     st.toast(
@@ -531,7 +521,7 @@ def show():
                             use_container_width=True,
                         )
 
-    # 4. Rendu de l'Onglet 1 : Rondes à venir
+    # 4. Rendu de l'Onglet 1
     with tab_a_faire:
         if rondes_a_venir:
             for ronde in rondes_a_venir:
@@ -541,7 +531,7 @@ def show():
                 "🎉 Toutes les rondes programmées pour cette vacation ont été effectuées !"
             )
 
-    # 5. Rendu de l'Onglet 2 : Rondes effectuées
+    # 5. Rendu de l'Onglet 2
     with tab_effectuees:
         if rondes_effectuees:
             for ronde in rondes_effectuees:
